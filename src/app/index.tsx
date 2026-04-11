@@ -137,7 +137,7 @@ const styles = StyleSheet.create({
     flex: 1,
     borderBottomLeftRadius: 32,
     borderBottomRightRadius: 32,
-    boxShadow: " 0px -4px 2px -1px rgba(155, 155, 155, 0.1) inset",
+    boxShadow: " 0px -4px 2px -1px rgba(155, 155, 155, 0.07) inset, 0px 0px 4px 4px rgba( 0, 0, 0,0.1) ",
     experimental_backgroundImage: "linear-gradient(180deg, #171717, #0A0A0A, #0A0A0A)",
     alignItems: "center",
     justifyContent: "center",
@@ -202,7 +202,7 @@ const styles = StyleSheet.create({
   },
   stringButtonText: {
     color: "#525252",
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
   },

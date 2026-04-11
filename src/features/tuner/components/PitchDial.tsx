@@ -1,4 +1,5 @@
 import {
+  Atlas,
   Canvas,
   Circle,
   Group,
@@ -8,17 +9,21 @@ import {
   Rect,
   RoundedRect,
   Skia,
+  useColorBuffer,
+  useTexture,
   processTransform3d,
   vec,
 } from "@shopify/react-native-skia";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo } from "react";
 import { StyleSheet, View } from "react-native";
 import {
   Easing,
-  type SharedValue,
+  runOnUI,
   useDerivedValue,
+  useFrameCallback,
   useSharedValue,
   withTiming,
+  type FrameInfo,
 } from "react-native-reanimated";
 
 import { SignalState } from "@/features/tuner/types";
@@ -29,119 +34,20 @@ const TICK_COUNT = 41;
 const START_ANGLE = (160 * Math.PI) / 180;
 const END_ANGLE = (20 * Math.PI) / 180;
 const SWEEP_ORANGE = "#FF6900";
-
-const TRAIL_WINDOW_MS = 2000;
-const TRAIL_ROWS = 6;
-const TRAIL_CAP = 220;
+const TRAIL_WINDOW_MS = 4000;
+const TRAIL_ROWS = 10;
+const TRAIL_CAP = 360;
 const TRAIL_DOT_R = 2;
-const TRAIL_BASE_Y_OFFSET = 16;
-const TRAIL_ROW_GAP = 11;
+const TRAIL_BASE_Y_OFFSET = 14;
+const TRAIL_ROW_GAP = 8;
 const TRAIL_HEAT_SIGMA = 0.072;
-const TRAIL_HEAT_GAIN = 0.72;
+const TRAIL_HEAT_GAIN = 0.76;
 const TRAIL_DOT_COUNT = TRAIL_ROWS * TICK_COUNT;
-
-function colorFromHeat(t: number): string {
-  const k = Math.max(0, Math.min(1, t));
-  const r0 = 0x1d;
-  const g0 = 0x18;
-  const b0 = 0x16;
-  const r = Math.round(r0 + (255 - r0) * k);
-  const g = Math.round(g0 + (105 - g0) * k);
-  const b = Math.round(b0 + (0 - b0) * k);
-  const a = 1 + (0.78 - 1) * k;
-  return `rgba(${r},${g},${b},${a})`;
-}
-
-/** JS rAF loop + plain Skia colors: per-dot Reanimated mappers + frame worklets were not updating reliably. */
-function useTrailHeatFrame(active: boolean, headCents: SharedValue<number>) {
-  const heat = useRef(new Float32Array(TRAIL_DOT_COUNT));
-  const tBuf = useRef(new Float64Array(TRAIL_CAP));
-  const pBuf = useRef(new Float32Array(TRAIL_CAP));
-  const startRef = useRef(0);
-  const lenRef = useRef(0);
-  const [, setFrame] = useState(0);
-
-  useEffect(() => {
-    if (!active) {
-      lenRef.current = 0;
-      startRef.current = 0;
-      heat.current.fill(0);
-      setFrame((f) => f + 1);
-      return;
-    }
-
-    let raf = 0;
-    const loop = () => {
-      const now = performance.now();
-      const cents = headCents.value;
-      const p =
-        (Math.max(-MAX_CENTS, Math.min(MAX_CENTS, cents)) + MAX_CENTS) /
-        (MAX_CENTS * 2);
-
-      let start = startRef.current;
-      let len = lenRef.current;
-      const tt = tBuf.current;
-      const pp = pBuf.current;
-
-      while (len > 0 && now - tt[start] > TRAIL_WINDOW_MS) {
-        start = (start + 1) % TRAIL_CAP;
-        len -= 1;
-      }
-
-      if (len < TRAIL_CAP) {
-        const w = (start + len) % TRAIL_CAP;
-        tt[w] = now;
-        pp[w] = p;
-        len += 1;
-      } else {
-        tt[start] = now;
-        pp[start] = p;
-        start = (start + 1) % TRAIL_CAP;
-      }
-
-      startRef.current = start;
-      lenRef.current = len;
-
-      const cols = TICK_COUNT;
-      const rows = TRAIL_ROWS;
-      const heatArr = heat.current;
-      const sigma = TRAIL_HEAT_SIGMA;
-      const twoSigmaSq = 2 * sigma * sigma;
-      const gain = TRAIL_HEAT_GAIN;
-      const rowMs = TRAIL_WINDOW_MS / rows;
-
-      for (let i = 0; i < cols * rows; i += 1) {
-        const col = i % cols;
-        const row = (i / cols) | 0;
-        const colProg = col / (cols - 1);
-        const ageMin = row * rowMs;
-        const ageMax = (row + 1) * rowMs;
-        let h = 0;
-
-        for (let k = 0; k < len; k += 1) {
-          const idx = (start + k) % TRAIL_CAP;
-          const age = now - tt[idx];
-          if (age < ageMin || age >= ageMax) {
-            continue;
-          }
-          const dp = pp[idx] - colProg;
-          h += Math.exp(-(dp * dp) / twoSigmaSq);
-        }
-        heatArr[i] = Math.min(1, h * gain);
-      }
-
-      setFrame((f) => f + 1);
-      raf = requestAnimationFrame(loop);
-    };
-
-    raf = requestAnimationFrame(loop);
-    return () => {
-      cancelAnimationFrame(raf);
-    };
-  }, [active, headCents]);
-
-  return heat;
-}
+const TRAIL_HEAT_COLD = { r: 0x40, g: 0x40, b: 0x40 };
+const TRAIL_HEAT_HOT = { r: 0xff, g: 0x69, b: 0x00 };
+const TRAIL_DOT_TEX = 48;
+const TRAIL_DOT_TEX_R = 17;
+const TRAIL_ATLAS_SCALE = TRAIL_DOT_R / TRAIL_DOT_TEX_R;
 
 export interface PitchDialProps {
   width: number;
@@ -150,6 +56,47 @@ export interface PitchDialProps {
   signalState: SignalState;
   isInTune: boolean;
   isStableInTune: boolean;
+}
+
+/** Same horizontal alpha ramp as Mask `mode="alpha"` (must be a fresh element per mount site for React). */
+function EdgeFadeMaskRect({
+  width: w,
+  height: h,
+}: {
+  width: number;
+  height: number;
+}) {
+  return (
+    <Rect x={0} y={0} width={w} height={h}>
+      <LinearGradient
+        start={vec(0, 0)}
+        end={vec(w, 0)}
+        colors={[
+          "rgba(0,0,0,0)",
+          "rgba(0,0,0,0.34)",
+          "rgba(0,0,0,1)",
+          "rgba(0,0,0,1)",
+          "rgba(0,0,0,0.34)",
+          "rgba(0,0,0,0)",
+        ]}
+        positions={[0, 0.1, 0.22, 0.78, 0.9, 1]}
+      />
+    </Rect>
+  );
+}
+
+function writeHeatToSkiaColor(
+  color: Float32Array,
+  t: number,
+  cold: typeof TRAIL_HEAT_COLD,
+  hot: typeof TRAIL_HEAT_HOT
+) {
+  "worklet";
+  const k = Math.max(0, Math.min(1, t));
+  color[0] = (cold.r + (hot.r - cold.r) * k) / 255;
+  color[1] = (cold.g + (hot.g - cold.g) * k) / 255;
+  color[2] = (cold.b + (hot.b - cold.b) * k) / 255;
+  color[3] = 1;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -347,6 +294,123 @@ export const PitchDial = memo(function PitchDial({
   const headOpacity = useSharedValue(signalState === "idle" ? 0.18 : 1);
   const headScale = useSharedValue(isStableInTune ? 0.94 : 1);
 
+  const recordTrail =
+    (signalState === "live" || signalState === "holding") &&
+    displayCents !== null;
+
+  const recordTrailSv = useSharedValue(recordTrail);
+  useEffect(() => {
+    recordTrailSv.value = recordTrail;
+  }, [recordTrail, recordTrailSv]);
+
+  const trailT = useSharedValue(new Float64Array(TRAIL_CAP));
+  const trailP = useSharedValue(new Float32Array(TRAIL_CAP));
+  const trailStart = useSharedValue(0);
+  const trailLen = useSharedValue(0);
+  const trailHeat = useSharedValue(new Float32Array(TRAIL_DOT_COUNT));
+  const trailHeatEpoch = useSharedValue(0);
+
+  const trailDotTexture = useTexture(
+    <Circle
+      cx={TRAIL_DOT_TEX / 2}
+      cy={TRAIL_DOT_TEX / 2}
+      r={TRAIL_DOT_TEX_R}
+      color="#FFFFFF"
+      antiAlias
+    />,
+    { width: TRAIL_DOT_TEX, height: TRAIL_DOT_TEX }
+  );
+
+  useEffect(() => {
+    if (!recordTrail) {
+      trailLen.value = 0;
+      trailStart.value = 0;
+      runOnUI(() => {
+        "worklet";
+        trailHeat.value.fill(0);
+        trailHeatEpoch.value += 1;
+      })();
+    }
+  }, [recordTrail, trailHeat, trailHeatEpoch, trailLen, trailStart]);
+
+  const onTrailFrame = useCallback(
+    (frameInfo: FrameInfo) => {
+      "worklet";
+      if (!recordTrailSv.value) {
+        return;
+      }
+
+      const now = frameInfo.timestamp;
+      const cents = headCents.value;
+      const p = toDialProgress(cents);
+
+      let start = trailStart.value;
+      let len = trailLen.value;
+      const tt = trailT.value;
+      const pp = trailP.value;
+
+      while (len > 0 && now - tt[start] > TRAIL_WINDOW_MS) {
+        start = (start + 1) % TRAIL_CAP;
+        len -= 1;
+      }
+
+      if (len < TRAIL_CAP) {
+        const w = (start + len) % TRAIL_CAP;
+        tt[w] = now;
+        pp[w] = p;
+        len += 1;
+      } else {
+        tt[start] = now;
+        pp[start] = p;
+        start = (start + 1) % TRAIL_CAP;
+      }
+
+      trailStart.value = start;
+      trailLen.value = len;
+
+      const cols = TICK_COUNT;
+      const rows = TRAIL_ROWS;
+      const heatArr = trailHeat.value;
+      const sigma = TRAIL_HEAT_SIGMA;
+      const twoSigmaSq = 2 * sigma * sigma;
+      const gain = TRAIL_HEAT_GAIN;
+      const rowMs = TRAIL_WINDOW_MS / rows;
+      const colDenom = cols - 1;
+
+      heatArr.fill(0);
+
+      for (let k = 0; k < len; k += 1) {
+        const idx = (start + k) % TRAIL_CAP;
+        const age = now - tt[idx];
+        const row = (age / rowMs) | 0;
+        if (row < 0 || row >= rows) {
+          continue;
+        }
+        const pk = pp[idx];
+        const base = row * cols;
+        for (let c = 0; c < cols; c += 1) {
+          const colProg = c / colDenom;
+          const dp = pk - colProg;
+          heatArr[base + c] += Math.exp(-(dp * dp) / twoSigmaSq);
+        }
+      }
+
+      for (let i = 0; i < heatArr.length; i += 1) {
+        heatArr[i] = Math.min(1, heatArr[i] * gain);
+      }
+
+      trailHeatEpoch.value += 1;
+    },
+    // Worklet only reads stable SharedValue refs (layout is fixed for this instance).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
+    []
+  );
+
+  const trailFrame = useFrameCallback(onTrailFrame, false);
+  useEffect(() => {
+    trailFrame.setActive(recordTrail);
+  }, [recordTrail, trailFrame]);
+
   useEffect(() => {
     headCents.set(withTiming(displayCents ?? 0, {
       duration: signalState === "live" ? 48 : 120,
@@ -432,7 +496,7 @@ export const PitchDial = memo(function PitchDial({
         width: tickWidth,
         height,
         radius: tickWidth / 2,
-        color: isMajor ? "#5B4F4B" : "#2B2523",
+        color: isMajor ? "#404040" : "#262626",
       };
     });
   }, [arcPadding, arcTop, edgeLift, width]);
@@ -460,11 +524,36 @@ export const PitchDial = memo(function PitchDial({
     return out;
   }, [arcPadding, arcTop, edgeLift, width]);
 
-  const trailRecordingActive =
-    displayCents !== null &&
-    (signalState === "live" || signalState === "holding");
+  const trailAtlasSprites = useMemo(
+    () =>
+      Array.from({ length: TRAIL_DOT_COUNT }, () =>
+        Skia.XYWHRect(0, 0, TRAIL_DOT_TEX, TRAIL_DOT_TEX)
+      ),
+    []
+  );
 
-  const trailHeatBuf = useTrailHeatFrame(trailRecordingActive, headCents);
+  const trailAtlasTransforms = useMemo(
+    () =>
+      trailDotLayout.map((dot) =>
+        Skia.RSXformFromRadians(
+          TRAIL_ATLAS_SCALE,
+          0,
+          dot.cx,
+          dot.cy,
+          TRAIL_DOT_TEX / 2,
+          TRAIL_DOT_TEX / 2
+        )
+      ),
+    [trailDotLayout]
+  );
+
+  const trailAtlasColors = useColorBuffer(TRAIL_DOT_COUNT, (color, index) => {
+    "worklet";
+    void trailHeatEpoch.value;
+    const h = trailHeat.value;
+    const v = h != null && index < h.length ? h[index] : 0;
+    writeHeatToSkiaColor(color, v, TRAIL_HEAT_COLD, TRAIL_HEAT_HOT);
+  });
 
   // Trim along the path: `start` and `end` must differ or the stroke length is zero.
   // Span from dial center (0 cents → 0.5) to the needle so the glow trail reads as “how far off” the note is.
@@ -478,59 +567,20 @@ export const PitchDial = memo(function PitchDial({
     return Math.max(0.5, progress);
   });
 
-  const edgeMask = useMemo(
-    () => (
-      <Rect x={0} y={0} width={width} height={height}>
-        <LinearGradient
-          start={vec(0, 0)}
-          end={vec(width, 0)}
-          colors={[
-            "rgba(0,0,0,0)",
-            "rgba(0,0,0,0.34)",
-            "rgba(0,0,0,1)",
-            "rgba(0,0,0,1)",
-            "rgba(0,0,0,0.34)",
-            "rgba(0,0,0,0)",
-          ]}
-          positions={[0, 0.1, 0.22, 0.78, 0.9, 1]}
-        />
-      </Rect>
-    ),
-    [height, width]
-  );
-
   return (
     <View style={[styles.container, { width, height }]}>
       <Canvas style={StyleSheet.absoluteFill}>
-        <Mask mode="alpha" mask={edgeMask}>
+        <Mask
+          mode="alpha"
+          mask={<EdgeFadeMaskRect width={width} height={height} />}
+        >
           <Path
             path={dialPath}
             style="stroke"
             strokeWidth={3}
             strokeCap="round"
-            color="#1D1816"
+            color="#404040"
           />
-        </Mask>
-      </Canvas>
-
-      <Canvas style={StyleSheet.absoluteFill}>
-        <Mask mode="alpha" mask={edgeMask}>
-          <Group>
-            {trailDotLayout.map((dot, index) => (
-              <Circle
-                key={`trail-${index}`}
-                cx={dot.cx}
-                cy={dot.cy}
-                r={TRAIL_DOT_R}
-                color={colorFromHeat(trailHeatBuf.current[index])}
-              />
-            ))}
-          </Group>
-        </Mask>
-      </Canvas>
-
-      <Canvas style={StyleSheet.absoluteFill}>
-        <Mask mode="alpha" mask={edgeMask}>
           <Path
             path={dialPath}
             style="stroke"
@@ -541,10 +591,24 @@ export const PitchDial = memo(function PitchDial({
             color={SWEEP_ORANGE}
           />
         </Mask>
+        <Group layer>
+          <Atlas
+            image={trailDotTexture}
+            sprites={trailAtlasSprites}
+            transforms={trailAtlasTransforms}
+            colors={trailAtlasColors}
+          />
+          <Group blendMode="dstIn">
+            <EdgeFadeMaskRect width={width} height={height} />
+          </Group>
+        </Group>
       </Canvas>
 
       <Canvas style={StyleSheet.absoluteFill}>
-        <Mask mode="alpha" mask={edgeMask}>
+        <Mask
+          mode="alpha"
+          mask={<EdgeFadeMaskRect width={width} height={height} />}
+        >
           <Group>
             {ticks.map((tick) => (
               <RoundedRect
@@ -563,7 +627,10 @@ export const PitchDial = memo(function PitchDial({
       </Canvas>
 
       <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-        <Mask mode="alpha" mask={edgeMask}>
+        <Mask
+          mode="alpha"
+          mask={<EdgeFadeMaskRect width={width} height={height} />}
+        >
           <Group
             transform={dialHeadTransform}
             opacity={dialHeadOpacity}
