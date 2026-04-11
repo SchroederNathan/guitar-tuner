@@ -1,5 +1,4 @@
 import {
-  BlurMask,
   Canvas,
   LinearGradient,
   Mask,
@@ -22,14 +21,11 @@ import Animated, {
 import { SignalState } from "@/features/tuner/types";
 
 const MAX_CENTS = 100;
-const HEAD_SIZE = 18;
+const HEAD_SIZE = 12;
 const TICK_COUNT = 41;
 const START_ANGLE = (160 * Math.PI) / 180;
 const END_ANGLE = (20 * Math.PI) / 180;
-const SWEEP_ORANGE = "#FF9B2E";
-const SWEEP_TRAIL_COLOR = "rgba(255, 155, 46, 0.26)";
-const SWEEP_TRAIL_STROKE_WIDTH = 9;
-const SWEEP_TRAIL_BLUR = 10;
+const SWEEP_ORANGE = "#E87A0A";
 
 export interface PitchDialProps {
   width: number;
@@ -60,13 +56,12 @@ function getDialPointAtProgress(
   width: number,
   arcPadding: number,
   arcTop: number,
-  curveDepth: number,
   edgeLift: number
 ) {
   "worklet";
   const clampedProgress = clamp(progress, 0, 1);
   const centerX = width / 2;
-  const middleY = arcTop + curveDepth;
+  const middleY = arcTop;
   const edgeY = arcTop - edgeLift;
   const edgeSine = Math.sin(END_ANGLE);
   const radiusY = (middleY - edgeY) / (1 - edgeSine);
@@ -85,7 +80,6 @@ function getDialPoint(
   width: number,
   arcPadding: number,
   arcTop: number,
-  curveDepth: number,
   edgeLift: number
 ) {
   "worklet";
@@ -94,7 +88,6 @@ function getDialPoint(
     width,
     arcPadding,
     arcTop,
-    curveDepth,
     edgeLift
   );
 }
@@ -103,7 +96,6 @@ function createDialPath(
   width: number,
   arcPadding: number,
   arcTop: number,
-  curveDepth: number,
   edgeLift: number,
   sampleCount: number = 96
 ) {
@@ -116,7 +108,6 @@ function createDialPath(
       width,
       arcPadding,
       arcTop,
-      curveDepth,
       edgeLift
     );
 
@@ -193,7 +184,6 @@ export const PitchDial = memo(function PitchDial({
 }: PitchDialProps) {
   const arcPadding = 18;
   const arcTop = Math.max(48, height * 0.24);
-  const curveDepth = 0;
   const edgeLift = Math.max(12, height * 0.1);
   const centerX = width / 2;
   const centerArcPoint = getDialPointAtProgress(
@@ -201,25 +191,21 @@ export const PitchDial = memo(function PitchDial({
     width,
     arcPadding,
     arcTop,
-    curveDepth,
     edgeLift
   );
   const tickBottomY = centerArcPoint.y - 8;
 
   const palette = isStableInTune || isInTune
     ? {
-      head: "#72F2A4",
-      glow: "rgba(114, 242, 164, 0.12)",
+      head: "#E87A0A",
     }
     : {
       head: "#FF9B2E",
-      glow: "rgba(255, 155, 46, 0.14)",
     };
 
   const headCents = useSharedValue(displayCents ?? 0);
   const headOpacity = useSharedValue(signalState === "idle" ? 0.18 : 1);
   const headScale = useSharedValue(isStableInTune ? 0.94 : 1);
-  const sweepVisibility = useSharedValue(displayCents === null ? 0 : 1);
 
   useEffect(() => {
     headCents.set(withTiming(displayCents ?? 0, {
@@ -227,13 +213,6 @@ export const PitchDial = memo(function PitchDial({
       easing: Easing.out(Easing.cubic),
     }));
   }, [displayCents, headCents, signalState]);
-
-  useEffect(() => {
-    sweepVisibility.set(withTiming(displayCents === null ? 0 : 1, {
-      duration: signalState === "live" ? 70 : 120,
-      easing: Easing.out(Easing.cubic),
-    }));
-  }, [displayCents, signalState, sweepVisibility]);
 
   useEffect(() => {
     headOpacity.set(withTiming(
@@ -255,7 +234,6 @@ export const PitchDial = memo(function PitchDial({
       width,
       arcPadding,
       arcTop,
-      curveDepth,
       edgeLift
     );
 
@@ -270,8 +248,8 @@ export const PitchDial = memo(function PitchDial({
   });
 
   const dialPath = useMemo(
-    () => createDialPath(width, arcPadding, arcTop, curveDepth, edgeLift),
-    [arcPadding, arcTop, curveDepth, edgeLift, width]
+    () => createDialPath(width, arcPadding, arcTop, edgeLift),
+    [arcPadding, arcTop, edgeLift, width]
   );
 
   const centerMarkerPath = useMemo(
@@ -287,7 +265,6 @@ export const PitchDial = memo(function PitchDial({
         width,
         arcPadding,
         arcTop,
-        curveDepth,
         edgeLift
       );
       const isMajor = index % 5 === 0;
@@ -296,7 +273,7 @@ export const PitchDial = memo(function PitchDial({
       const tickWidth = isMajor ? 2 : 1.5;
 
       return {
-        key: `${index}-${progress}`,
+        key: String(index),
         cx: point.x,
         y: bottom - height,
         width: tickWidth,
@@ -305,16 +282,18 @@ export const PitchDial = memo(function PitchDial({
         opacity: isMajor ? 0.7 : 0.4,
       };
     });
-  }, [arcPadding, arcTop, curveDepth, edgeLift, width]);
+  }, [arcPadding, arcTop, edgeLift, width]);
 
+  // Trim along the path: `start` and `end` must differ or the stroke length is zero.
+  // Span from dial center (0 cents → 0.5) to the needle so the glow trail reads as “how far off” the note is.
   const sweepStart = useDerivedValue(() => {
     const progress = toDialProgress(headCents.value);
-    return Math.max(0, progress);
+    return Math.min(0.5, progress);
   });
 
   const sweepEnd = useDerivedValue(() => {
     const progress = toDialProgress(headCents.value);
-    return Math.min(1, progress);
+    return Math.max(0.5, progress);
   });
 
   const edgeMask = useMemo(
@@ -357,18 +336,6 @@ export const PitchDial = memo(function PitchDial({
           <Path
             path={dialPath}
             style="stroke"
-            strokeWidth={SWEEP_TRAIL_STROKE_WIDTH}
-            strokeCap="round"
-            start={sweepStart}
-            end={sweepEnd}
-            color={SWEEP_TRAIL_COLOR}
-          >
-            <BlurMask blur={SWEEP_TRAIL_BLUR} />
-          </Path>
-
-          <Path
-            path={dialPath}
-            style="stroke"
             strokeWidth={3}
             strokeCap="round"
             start={sweepStart}
@@ -392,23 +359,9 @@ export const PitchDial = memo(function PitchDial({
             />
           ))}
         </Mask>
-
         <Path path={centerMarkerPath} color={SWEEP_ORANGE} strokeCap="round" />
       </Canvas>
 
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          styles.headGlow,
-          {
-            width: HEAD_SIZE,
-            height: HEAD_SIZE,
-            borderRadius: HEAD_SIZE / 2,
-            backgroundColor: palette.glow,
-          },
-          animatedHeadStyle,
-        ]}
-      />
       <Animated.View
         pointerEvents="none"
         style={[
@@ -430,20 +383,9 @@ const styles = StyleSheet.create({
   container: {
     position: "relative",
   },
-  headGlow: {
-    position: "absolute",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 10,
-    elevation: 4,
-  },
   headCore: {
     position: "absolute",
-    borderWidth: 1.5,
-    borderColor: "rgba(255,255,255,0.34)",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.16,
-    shadowRadius: 4,
-    elevation: 2,
+    borderWidth: 1,
+    borderColor: "#E87A0A",
   },
 });
