@@ -8,7 +8,8 @@
     "scheme": "guitartuner",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.schroedernathan.guitar-tuner"
     },
     "android": {
       "adaptiveIcon": {
@@ -17,7 +18,14 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
+      "package": "com.schroedernathan.guitartuner"
     },
     "web": {
       "output": "static",
@@ -25,6 +33,19 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "react-native-audio-api",
+        {
+          "iosBackgroundMode": false,
+          "iosMicrophonePermission": "Allow Guitar Tuner to listen to your instrument so it can measure pitch.",
+          "androidPermissions": [
+            "android.permission.RECORD_AUDIO",
+            "android.permission.MODIFY_AUDIO_SETTINGS"
+          ],
+          "androidForegroundService": false,
+          "androidFSTypes": []
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -39,6 +60,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "4a49ee76-1acb-4f60-8c97-f0686b564d24"
+      }
+    },
+    "owner": "schroedernathan"
   }
 }
