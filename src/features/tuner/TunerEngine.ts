@@ -12,6 +12,7 @@ import {
   IN_TUNE_CENTS,
   MAX_GUITAR_FREQUENCY,
   MIN_GUITAR_FREQUENCY,
+  PITCH_HISTORY_WINDOW_MS,
   RMS_NOISE_GATE,
   STABLE_IN_TUNE_MS,
   STALE_DETECTION_MS,
@@ -25,7 +26,12 @@ import {
   frequencyToDetectedNote,
   isWithinTune,
 } from "@/features/tuner/pitch";
-import { StringId, TunerSnapshot, WorkletPitchPacket } from "@/features/tuner/types";
+import {
+  PitchHistoryPoint,
+  StringId,
+  TunerSnapshot,
+  WorkletPitchPacket,
+} from "@/features/tuner/types";
 
 type Listener = () => void;
 
@@ -35,8 +41,12 @@ const INITIAL_SNAPSHOT: TunerSnapshot = {
   targetFrequency: null,
   detectedFrequency: null,
   detectedNote: null,
+  nearestNote: null,
   centsToTarget: null,
+  displayCents: null,
   confidence: 0,
+  signalState: "idle",
+  pitchHistory: [],
   isInTune: false,
   isStableInTune: false,
   completedStrings: [],
@@ -71,6 +81,13 @@ export class TunerEngine {
     this.setSnapshot({
       selectedString: stringId,
       targetFrequency: TARGET_FREQUENCIES[stringId],
+      detectedFrequency: null,
+      detectedNote: null,
+      nearestNote: null,
+      centsToTarget: null,
+      displayCents: null,
+      signalState: "idle",
+      pitchHistory: [],
       isStableInTune: false,
       errorMessage:
         this.snapshot.status === "permission-denied"
@@ -118,8 +135,12 @@ export class TunerEngine {
       status: "idle",
       detectedFrequency: null,
       detectedNote: null,
+      nearestNote: null,
       centsToTarget: null,
+      displayCents: null,
       confidence: 0,
+      signalState: "idle",
+      pitchHistory: [],
       isInTune: false,
       isStableInTune: false,
       errorMessage: null,
@@ -269,6 +290,8 @@ export class TunerEngine {
     if (!selectedString || !targetFrequency) {
       this.setSnapshot({
         confidence: packet.confidence,
+        signalState: "idle",
+        pitchHistory: [],
       });
       return;
     }
@@ -278,6 +301,12 @@ export class TunerEngine {
       const detectedNote = frequencyToDetectedNote(packet.frequency);
       const centsToTarget = centsBetween(packet.frequency, targetFrequency);
       const isInTune = isWithinTune(centsToTarget);
+      const pitchHistory = this.pushPitchHistory({
+        at: now,
+        frequency: packet.frequency,
+        cents: centsToTarget,
+        confidence: packet.confidence,
+      });
       let isStableInTune = false;
 
       if (isInTune) {
@@ -295,8 +324,12 @@ export class TunerEngine {
         status: "listening",
         detectedFrequency: packet.frequency,
         detectedNote: detectedNote.label,
+        nearestNote: detectedNote.label,
         centsToTarget,
+        displayCents: centsToTarget,
         confidence: packet.confidence,
+        signalState: "live",
+        pitchHistory,
         isInTune,
         isStableInTune,
         completedStrings: [...this.completedStrings],
@@ -312,6 +345,8 @@ export class TunerEngine {
     if (shouldFreezeLastGoodReading) {
       this.setSnapshot({
         confidence: packet.confidence,
+        signalState: "holding",
+        pitchHistory: this.trimPitchHistory(this.snapshot.pitchHistory, now),
       });
       return;
     }
@@ -321,7 +356,11 @@ export class TunerEngine {
       confidence: packet.confidence,
       detectedFrequency: null,
       detectedNote: null,
+      nearestNote: null,
       centsToTarget: null,
+      displayCents: null,
+      signalState: "idle",
+      pitchHistory: this.trimPitchHistory(this.snapshot.pitchHistory, now),
       isInTune: false,
       isStableInTune: false,
     });
@@ -343,6 +382,14 @@ export class TunerEngine {
     }
 
     return window;
+  }
+
+  private pushPitchHistory(point: PitchHistoryPoint) {
+    return this.trimPitchHistory([...this.snapshot.pitchHistory, point], point.at);
+  }
+
+  private trimPitchHistory(history: PitchHistoryPoint[], now: number) {
+    return history.filter((point) => now - point.at <= PITCH_HISTORY_WINDOW_MS);
   }
 
   private setSnapshot = (partial: Partial<TunerSnapshot>) => {

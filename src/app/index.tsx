@@ -1,16 +1,19 @@
 import { StatusBar } from "expo-status-bar";
 import {
   Pressable,
-  SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
   STANDARD_TUNING,
   TARGET_LABELS,
 } from "@/features/tuner/constants";
+import { PitchDial } from "@/features/tuner/components/PitchDial";
 import { useTuner } from "@/features/tuner/useTuner";
 import { StringId } from "@/features/tuner/types";
 
@@ -62,16 +65,17 @@ function getGuidanceText(snapshot: ReturnType<typeof useTuner>["snapshot"]) {
   return `Too sharp by ${cents} cents.`;
 }
 
-function getMeterColor(snapshot: ReturnType<typeof useTuner>["snapshot"]) {
-  if (snapshot.isStableInTune || snapshot.isInTune) {
-    return "#6BEA9A";
+function formatSignedCents(value: number | null, hasTarget: boolean) {
+  if (!hasTarget) {
+    return "--";
   }
 
-  if (snapshot.centsToTarget === null) {
-    return "#F2EEE7";
+  if (value === null) {
+    return "0";
   }
 
-  return snapshot.centsToTarget < 0 ? "#F2BB63" : "#F07D67";
+  const rounded = Math.round(value);
+  return `${rounded > 0 ? "+" : ""}${rounded}`;
 }
 
 function formatFrequency(value: number | null) {
@@ -80,11 +84,23 @@ function formatFrequency(value: number | null) {
 
 export default function Index() {
   const { snapshot, selectString } = useTuner();
-  const meterOffset = snapshot.centsToTarget ?? 0;
-  const meterPosition = `${50 + meterOffset}%` as const;
+  const { width } = useWindowDimensions();
+  const dialWidth = Math.min(width - 32, 460);
+  const dialHeight = Math.min(360, dialWidth * 0.76);
   const targetLabel = snapshot.selectedString
     ? TARGET_LABELS[snapshot.selectedString]
     : "Standard tuning";
+  const centsValue = formatSignedCents(
+    snapshot.displayCents,
+    Boolean(snapshot.selectedString)
+  );
+  const liveLabel = snapshot.selectedString
+    ? snapshot.selectedString
+    : "Select a string";
+  const nearestNote =
+    snapshot.nearestNote && snapshot.nearestNote !== snapshot.selectedString
+      ? snapshot.nearestNote
+      : null;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -95,7 +111,7 @@ export default function Index() {
 
         <View style={styles.header}>
           <Text style={styles.eyebrow}>GUITAR TUNER</Text>
-          <Text style={styles.title}>Tune one string at a time.</Text>
+          <Text style={styles.title}>Dial into pitch in real time.</Text>
           <View style={styles.statusRow}>
             <Text style={styles.statusChip}>{getStatusText(snapshot.status)}</Text>
             <Text style={styles.statusHint}>
@@ -104,34 +120,35 @@ export default function Index() {
           </View>
         </View>
 
-        <View style={styles.readoutCard}>
-          <Text style={styles.targetLabel}>{targetLabel}</Text>
-          <Text style={styles.noteLabel}>
-            {snapshot.detectedNote ?? snapshot.selectedString ?? "--"}
-          </Text>
-          <Text style={styles.frequencyLabel}>
-            {formatFrequency(snapshot.detectedFrequency)} Hz
+        <View style={styles.heroBlock}>
+          <Text style={styles.centsReadout}>{centsValue}</Text>
+          <Text style={styles.centsSuffix}>cents</Text>
+          <Text style={styles.liveLabel}>{liveLabel}</Text>
+          <Text style={styles.liveMeta}>
+            {nearestNote
+              ? `Hearing ${nearestNote} against ${snapshot.selectedString}`
+              : targetLabel}
           </Text>
 
-          <View style={styles.meterWrap}>
-            <View style={styles.meterLabels}>
-              <Text style={styles.meterLabel}>-50</Text>
-              <Text style={styles.meterCenterLabel}>0</Text>
-              <Text style={styles.meterLabel}>+50</Text>
-            </View>
-            <View style={styles.meterTrack}>
-              <View style={styles.meterCenterLine} />
-              <View style={styles.inTuneZone} />
-              <View
-                style={[
-                  styles.needle,
-                  {
-                    backgroundColor: getMeterColor(snapshot),
-                    left: meterPosition,
-                  },
-                ]}
+          <View style={styles.dialWrap}>
+            {PitchDial ? (
+              <PitchDial
+                width={dialWidth}
+                height={dialHeight}
+                displayCents={snapshot.displayCents}
+                pitchHistory={snapshot.pitchHistory}
+                signalState={snapshot.signalState}
+                isInTune={snapshot.isInTune}
+                isStableInTune={snapshot.isStableInTune}
+                confidence={snapshot.confidence}
               />
-            </View>
+            ) : (
+              <View style={[styles.dialFallback, { width: dialWidth, height: dialHeight }]}>
+                <Text style={styles.dialFallbackText}>
+                  Native Skia dial is available in iOS and Android dev builds.
+                </Text>
+              </View>
+            )}
           </View>
 
           <Text
@@ -151,11 +168,9 @@ export default function Index() {
               </Text>
             </View>
             <View style={styles.secondaryItem}>
-              <Text style={styles.secondaryLabel}>Offset</Text>
+              <Text style={styles.secondaryLabel}>Live</Text>
               <Text style={styles.secondaryValue}>
-                {snapshot.centsToTarget === null
-                  ? "--"
-                  : `${Math.round(snapshot.centsToTarget)} cents`}
+                {formatFrequency(snapshot.detectedFrequency)} Hz
               </Text>
             </View>
             <View style={styles.secondaryItem}>
@@ -167,7 +182,17 @@ export default function Index() {
           </View>
         </View>
 
-        <View style={styles.buttonsBlock}>
+        <View style={styles.selectorBlock}>
+          <View style={styles.selectorHeader}>
+            <Text style={styles.selectorTitle}>Strings</Text>
+            <Text style={styles.selectorSubtitle}>Tap to tune</Text>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.selectorScrollContent}
+          >
           {STANDARD_TUNING.map((item) => {
             const isSelected = snapshot.selectedString === item.id;
             const isCompleted = snapshot.completedStrings.includes(item.id);
@@ -184,6 +209,7 @@ export default function Index() {
               />
             );
           })}
+          </ScrollView>
         </View>
       </View>
     </SafeAreaView>
@@ -231,45 +257,45 @@ const styles = StyleSheet.create({
   },
   screen: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
     justifyContent: "space-between",
-    backgroundColor: "#171411",
+    backgroundColor: "#08090C",
   },
   backgroundOrbTop: {
     position: "absolute",
-    top: -120,
-    right: -60,
+    top: -80,
+    right: -40,
     width: 260,
     height: 260,
     borderRadius: 130,
-    backgroundColor: "rgba(112, 67, 34, 0.24)",
+    backgroundColor: "rgba(255, 113, 25, 0.13)",
   },
   backgroundOrbBottom: {
     position: "absolute",
-    bottom: -90,
-    left: -70,
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: "rgba(26, 109, 84, 0.18)",
+    bottom: -60,
+    left: -40,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: "rgba(35, 165, 117, 0.12)",
   },
   header: {
     paddingTop: 12,
-    gap: 10,
+    gap: 8,
   },
   eyebrow: {
-    color: "#B6AA9B",
+    color: "#9C9EA9",
     fontSize: 12,
     letterSpacing: 2.4,
     fontWeight: "700",
   },
   title: {
-    color: "#F4EFE6",
-    fontSize: 34,
-    lineHeight: 40,
+    color: "#F7F7F9",
+    fontSize: 36,
+    lineHeight: 42,
     fontWeight: "700",
-    maxWidth: 300,
+    maxWidth: 320,
   },
   statusRow: {
     flexDirection: "row",
@@ -278,10 +304,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   statusChip: {
-    color: "#F4EFE6",
+    color: "#F4F4F7",
     backgroundColor: "rgba(255,255,255,0.08)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.06)",
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,
@@ -290,160 +316,149 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   statusHint: {
-    color: "#D2C7BA",
+    color: "#B0B4C0",
     fontSize: 14,
   },
-  readoutCard: {
-    backgroundColor: "rgba(255,255,255,0.05)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    borderRadius: 28,
-    paddingHorizontal: 20,
-    paddingVertical: 24,
-    gap: 14,
-  },
-  targetLabel: {
-    color: "#C7B9A9",
-    fontSize: 14,
-    letterSpacing: 0.4,
-  },
-  noteLabel: {
-    color: "#F7F3EB",
-    fontSize: 82,
-    lineHeight: 88,
-    fontWeight: "700",
-    letterSpacing: -2,
-  },
-  frequencyLabel: {
-    color: "#E1D7CB",
-    fontSize: 18,
-    fontVariant: ["tabular-nums"],
-  },
-  meterWrap: {
+  heroBlock: {
+    alignItems: "center",
     gap: 10,
-    paddingTop: 6,
+    paddingTop: 8,
   },
-  meterLabels: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  meterLabel: {
-    color: "#A89988",
-    fontSize: 12,
-    fontVariant: ["tabular-nums"],
-  },
-  meterCenterLabel: {
-    color: "#E8E0D4",
-    fontSize: 12,
+  centsReadout: {
+    color: "#F7F7FA",
+    fontSize: 72,
+    lineHeight: 76,
     fontWeight: "700",
+    letterSpacing: -3,
     fontVariant: ["tabular-nums"],
   },
-  meterTrack: {
-    position: "relative",
-    height: 18,
-    borderRadius: 999,
-    backgroundColor: "#241F1A",
+  centsSuffix: {
+    marginTop: -10,
+    color: "#8B8F9B",
+    fontSize: 13,
+    textTransform: "uppercase",
+    letterSpacing: 2.2,
+  },
+  liveLabel: {
+    color: "#F4F4F7",
+    fontSize: 22,
+    fontWeight: "700",
+    letterSpacing: -0.4,
+  },
+  liveMeta: {
+    color: "#9EA5B4",
+    fontSize: 14,
+    fontVariant: ["tabular-nums"],
+  },
+  dialWrap: {
+    marginTop: 8,
+  },
+  dialFallback: {
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 28,
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
-    overflow: "hidden",
+    borderColor: "rgba(255,255,255,0.06)",
   },
-  inTuneZone: {
-    position: "absolute",
-    left: "45%",
-    width: "10%",
-    top: 0,
-    bottom: 0,
-    backgroundColor: "rgba(107, 234, 154, 0.22)",
-  },
-  meterCenterLine: {
-    position: "absolute",
-    left: "50%",
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: "rgba(255,255,255,0.25)",
-  },
-  needle: {
-    position: "absolute",
-    top: 1,
-    bottom: 1,
-    width: 4,
-    marginLeft: -2,
-    borderRadius: 999,
+  dialFallbackText: {
+    maxWidth: 220,
+    textAlign: "center",
+    color: "#9EA5B4",
+    lineHeight: 22,
   },
   guidance: {
-    color: "#F4EFE6",
+    color: "#E8EAF0",
     fontSize: 16,
     lineHeight: 22,
     minHeight: 44,
+    textAlign: "center",
+    maxWidth: 340,
   },
   guidanceSuccess: {
     color: "#7BF0A6",
   },
   secondaryRow: {
     flexDirection: "row",
-    gap: 12,
+    gap: 10,
   },
   secondaryItem: {
     flex: 1,
-    backgroundColor: "#1C1815",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderRadius: 18,
     paddingHorizontal: 14,
     paddingVertical: 12,
     gap: 6,
   },
   secondaryLabel: {
-    color: "#9E9386",
+    color: "#8F97A6",
     fontSize: 12,
     textTransform: "uppercase",
     letterSpacing: 0.8,
   },
   secondaryValue: {
-    color: "#F4EFE6",
+    color: "#F5F6F8",
     fontSize: 15,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
   },
-  buttonsBlock: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+  selectorBlock: {
     gap: 12,
+    paddingTop: 8,
+  },
+  selectorHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  selectorTitle: {
+    color: "#F5F6F8",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  selectorSubtitle: {
+    color: "#8E96A4",
+    fontSize: 13,
+  },
+  selectorScrollContent: {
+    gap: 10,
+    paddingRight: 16,
   },
   stringButton: {
-    width: "48%",
-    minHeight: 92,
-    borderRadius: 22,
-    paddingHorizontal: 16,
+    width: 92,
+    minHeight: 88,
+    borderRadius: 20,
+    paddingHorizontal: 14,
     paddingVertical: 14,
-    backgroundColor: "#1B1814",
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
     justifyContent: "space-between",
   },
   stringButtonSelected: {
-    backgroundColor: "#262018",
-    borderColor: "#F2BB63",
+    backgroundColor: "rgba(255, 144, 41, 0.14)",
+    borderColor: "#FF9B2E",
   },
   stringButtonCompleted: {
-    backgroundColor: "#183126",
+    backgroundColor: "rgba(61, 191, 121, 0.18)",
     borderColor: "#6BEA9A",
   },
   stringButtonPressed: {
     opacity: 0.92,
-    transform: [{ scale: 0.99 }],
+    transform: [{ scale: 0.96 }],
   },
   stringButtonId: {
-    color: "#F8F2E9",
-    fontSize: 24,
+    color: "#FAFBFC",
+    fontSize: 22,
     fontWeight: "700",
   },
   stringButtonLabel: {
-    color: "#D7CCBF",
-    fontSize: 14,
+    color: "#CFD4DE",
+    fontSize: 13,
   },
   stringButtonFrequency: {
-    color: "#A99E91",
-    fontSize: 13,
+    color: "#8F98A8",
+    fontSize: 12,
     fontVariant: ["tabular-nums"],
   },
 });

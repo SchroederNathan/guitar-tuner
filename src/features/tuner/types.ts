@@ -23,14 +23,27 @@ export interface WorkletPitchPacket {
   rms: number;
 }
 
+export type SignalState = "live" | "holding" | "idle";
+
+export interface PitchHistoryPoint {
+  at: number;
+  frequency: number;
+  cents: number;
+  confidence: number;
+}
+
 export interface TunerSnapshot {
   status: TunerStatus;
   selectedString: StringId | null;
   targetFrequency: number | null;
   detectedFrequency: number | null;
   detectedNote: string | null;
+  nearestNote: string | null;
   centsToTarget: number | null;
+  displayCents: number | null;
   confidence: number;
+  signalState: SignalState;
+  pitchHistory: PitchHistoryPoint[];
   isInTune: boolean;
   isStableInTune: boolean;
   completedStrings: StringId[];

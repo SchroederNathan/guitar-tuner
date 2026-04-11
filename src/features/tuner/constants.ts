@@ -40,12 +40,13 @@ export const TARGET_LABELS = Object.fromEntries(
 ) as Record<(typeof STANDARD_TUNING)[number]["id"], string>;
 
 export const AUDIO_SAMPLE_RATE = 16000;
-export const WORKLET_BUFFER_LENGTH = 2048;
+export const WORKLET_BUFFER_LENGTH = 1024;
 export const ANALYSIS_BUFFER_LENGTH = 8192;
 export const MIN_GUITAR_FREQUENCY = 70;
 export const MAX_GUITAR_FREQUENCY = 400;
 export const RMS_NOISE_GATE = 0.0025;
 export const CONFIDENCE_THRESHOLD = 0.6;
 export const STALE_DETECTION_MS = 900;
+export const PITCH_HISTORY_WINDOW_MS = 2000;
 export const IN_TUNE_CENTS = 5;
 export const STABLE_IN_TUNE_MS = 500;
