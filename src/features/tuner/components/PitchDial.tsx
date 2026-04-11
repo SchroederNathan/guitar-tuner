@@ -1,18 +1,21 @@
 import {
   Canvas,
+  Circle,
+  Group,
   LinearGradient,
   Mask,
   Path,
   Rect,
   RoundedRect,
   Skia,
-  vec
+  processTransform3d,
+  vec,
 } from "@shopify/react-native-skia";
-import { memo, useEffect, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
-import Animated, {
+import {
   Easing,
-  useAnimatedStyle,
+  type SharedValue,
   useDerivedValue,
   useSharedValue,
   withTiming,
@@ -25,7 +28,120 @@ const HEAD_SIZE = 12;
 const TICK_COUNT = 41;
 const START_ANGLE = (160 * Math.PI) / 180;
 const END_ANGLE = (20 * Math.PI) / 180;
-const SWEEP_ORANGE = "#E87A0A";
+const SWEEP_ORANGE = "#FF6900";
+
+const TRAIL_WINDOW_MS = 2000;
+const TRAIL_ROWS = 6;
+const TRAIL_CAP = 220;
+const TRAIL_DOT_R = 2;
+const TRAIL_BASE_Y_OFFSET = 16;
+const TRAIL_ROW_GAP = 11;
+const TRAIL_HEAT_SIGMA = 0.072;
+const TRAIL_HEAT_GAIN = 0.72;
+const TRAIL_DOT_COUNT = TRAIL_ROWS * TICK_COUNT;
+
+function colorFromHeat(t: number): string {
+  const k = Math.max(0, Math.min(1, t));
+  const r0 = 0x1d;
+  const g0 = 0x18;
+  const b0 = 0x16;
+  const r = Math.round(r0 + (255 - r0) * k);
+  const g = Math.round(g0 + (105 - g0) * k);
+  const b = Math.round(b0 + (0 - b0) * k);
+  const a = 1 + (0.78 - 1) * k;
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/** JS rAF loop + plain Skia colors: per-dot Reanimated mappers + frame worklets were not updating reliably. */
+function useTrailHeatFrame(active: boolean, headCents: SharedValue<number>) {
+  const heat = useRef(new Float32Array(TRAIL_DOT_COUNT));
+  const tBuf = useRef(new Float64Array(TRAIL_CAP));
+  const pBuf = useRef(new Float32Array(TRAIL_CAP));
+  const startRef = useRef(0);
+  const lenRef = useRef(0);
+  const [, setFrame] = useState(0);
+
+  useEffect(() => {
+    if (!active) {
+      lenRef.current = 0;
+      startRef.current = 0;
+      heat.current.fill(0);
+      setFrame((f) => f + 1);
+      return;
+    }
+
+    let raf = 0;
+    const loop = () => {
+      const now = performance.now();
+      const cents = headCents.value;
+      const p =
+        (Math.max(-MAX_CENTS, Math.min(MAX_CENTS, cents)) + MAX_CENTS) /
+        (MAX_CENTS * 2);
+
+      let start = startRef.current;
+      let len = lenRef.current;
+      const tt = tBuf.current;
+      const pp = pBuf.current;
+
+      while (len > 0 && now - tt[start] > TRAIL_WINDOW_MS) {
+        start = (start + 1) % TRAIL_CAP;
+        len -= 1;
+      }
+
+      if (len < TRAIL_CAP) {
+        const w = (start + len) % TRAIL_CAP;
+        tt[w] = now;
+        pp[w] = p;
+        len += 1;
+      } else {
+        tt[start] = now;
+        pp[start] = p;
+        start = (start + 1) % TRAIL_CAP;
+      }
+
+      startRef.current = start;
+      lenRef.current = len;
+
+      const cols = TICK_COUNT;
+      const rows = TRAIL_ROWS;
+      const heatArr = heat.current;
+      const sigma = TRAIL_HEAT_SIGMA;
+      const twoSigmaSq = 2 * sigma * sigma;
+      const gain = TRAIL_HEAT_GAIN;
+      const rowMs = TRAIL_WINDOW_MS / rows;
+
+      for (let i = 0; i < cols * rows; i += 1) {
+        const col = i % cols;
+        const row = (i / cols) | 0;
+        const colProg = col / (cols - 1);
+        const ageMin = row * rowMs;
+        const ageMax = (row + 1) * rowMs;
+        let h = 0;
+
+        for (let k = 0; k < len; k += 1) {
+          const idx = (start + k) % TRAIL_CAP;
+          const age = now - tt[idx];
+          if (age < ageMin || age >= ageMax) {
+            continue;
+          }
+          const dp = pp[idx] - colProg;
+          h += Math.exp(-(dp * dp) / twoSigmaSq);
+        }
+        heatArr[i] = Math.min(1, h * gain);
+      }
+
+      setFrame((f) => f + 1);
+      raf = requestAnimationFrame(loop);
+    };
+
+    raf = requestAnimationFrame(loop);
+    return () => {
+      cancelAnimationFrame(raf);
+    };
+  }, [active, headCents]);
+
+  return heat;
+}
 
 export interface PitchDialProps {
   width: number;
@@ -90,6 +206,30 @@ function getDialPoint(
     arcTop,
     edgeLift
   );
+}
+
+/** Radians: direction along the dial arc (increasing cents / progress), tangent to the ellipse. */
+function getDialTangentAngle(
+  cents: number,
+  width: number,
+  arcPadding: number,
+  arcTop: number,
+  edgeLift: number
+) {
+  "worklet";
+  const progress = toDialProgress(cents);
+  const clampedProgress = clamp(progress, 0, 1);
+  const centerX = width / 2;
+  const middleY = arcTop;
+  const edgeY = arcTop - edgeLift;
+  const edgeSine = Math.sin(END_ANGLE);
+  const radiusY = (middleY - edgeY) / (1 - edgeSine);
+  const radiusX = (centerX - arcPadding) / Math.abs(Math.cos(START_ANGLE));
+  const angleSpan = END_ANGLE - START_ANGLE;
+  const theta = mix(START_ANGLE, END_ANGLE, clampedProgress);
+  const dxDp = -radiusX * Math.sin(theta) * angleSpan;
+  const dyDp = radiusY * Math.cos(theta) * angleSpan;
+  return Math.atan2(dyDp, dxDp);
 }
 
 function createDialPath(
@@ -197,7 +337,7 @@ export const PitchDial = memo(function PitchDial({
 
   const palette = isStableInTune || isInTune
     ? {
-      head: "#E87A0A",
+      head: "#FF6900",
     }
     : {
       head: "#FF9B2E",
@@ -228,7 +368,9 @@ export const PitchDial = memo(function PitchDial({
     }));
   }, [headOpacity, headScale, isStableInTune, signalState]);
 
-  const animatedHeadStyle = useAnimatedStyle(() => {
+  // Single `{ matrix }` step: some runtimes don’t apply a raw Reanimated transform array on `Group`.
+  const dialHeadTransform = useDerivedValue(() => {
+    "worklet";
     const point = getDialPoint(
       headCents.value,
       width,
@@ -236,16 +378,27 @@ export const PitchDial = memo(function PitchDial({
       arcTop,
       edgeLift
     );
-
-    return {
-      opacity: headOpacity.value,
-      transform: [
-        { translateX: point.x - HEAD_SIZE / 2 },
-        { translateY: point.y - HEAD_SIZE / 2 },
-        { scale: headScale.value },
-      ],
-    };
+    const angle = getDialTangentAngle(
+      headCents.value,
+      width,
+      arcPadding,
+      arcTop,
+      edgeLift
+    );
+    const s = headScale.value;
+    return [
+      {
+        matrix: processTransform3d([
+          { translateX: point.x },
+          { translateY: point.y },
+          { rotate: angle },
+          { scale: s },
+        ]),
+      },
+    ];
   });
+
+  const dialHeadOpacity = useDerivedValue(() => headOpacity.value);
 
   const dialPath = useMemo(
     () => createDialPath(width, arcPadding, arcTop, edgeLift),
@@ -279,10 +432,39 @@ export const PitchDial = memo(function PitchDial({
         width: tickWidth,
         height,
         radius: tickWidth / 2,
-        opacity: isMajor ? 0.7 : 0.4,
+        color: isMajor ? "#5B4F4B" : "#2B2523",
       };
     });
   }, [arcPadding, arcTop, edgeLift, width]);
+
+  const trailDotLayout = useMemo(() => {
+    const out: { cx: number; cy: number }[] = [];
+    const cols = TICK_COUNT;
+
+    for (let row = 0; row < TRAIL_ROWS; row += 1) {
+      const yExtra = TRAIL_BASE_Y_OFFSET + row * TRAIL_ROW_GAP;
+
+      for (let col = 0; col < cols; col += 1) {
+        const progress = col / (cols - 1);
+        const point = getDialPointAtProgress(
+          progress,
+          width,
+          arcPadding,
+          arcTop,
+          edgeLift
+        );
+        out.push({ cx: point.x, cy: point.y + yExtra });
+      }
+    }
+
+    return out;
+  }, [arcPadding, arcTop, edgeLift, width]);
+
+  const trailRecordingActive =
+    displayCents !== null &&
+    (signalState === "live" || signalState === "holding");
+
+  const trailHeatBuf = useTrailHeatFrame(trailRecordingActive, headCents);
 
   // Trim along the path: `start` and `end` must differ or the stroke length is zero.
   // Span from dial center (0 cents → 0.5) to the needle so the glow trail reads as “how far off” the note is.
@@ -303,12 +485,12 @@ export const PitchDial = memo(function PitchDial({
           start={vec(0, 0)}
           end={vec(width, 0)}
           colors={[
-            "rgba(255,255,255,0)",
-            "rgba(255,255,255,0.34)",
-            "rgba(255,255,255,1)",
-            "rgba(255,255,255,1)",
-            "rgba(255,255,255,0.34)",
-            "rgba(255,255,255,0)",
+            "rgba(0,0,0,0)",
+            "rgba(0,0,0,0.34)",
+            "rgba(0,0,0,1)",
+            "rgba(0,0,0,1)",
+            "rgba(0,0,0,0.34)",
+            "rgba(0,0,0,0)",
           ]}
           positions={[0, 0.1, 0.22, 0.78, 0.9, 1]}
         />
@@ -326,8 +508,24 @@ export const PitchDial = memo(function PitchDial({
             style="stroke"
             strokeWidth={3}
             strokeCap="round"
-            color="rgba(255,255,255,0.18)"
+            color="#1D1816"
           />
+        </Mask>
+      </Canvas>
+
+      <Canvas style={StyleSheet.absoluteFill}>
+        <Mask mode="alpha" mask={edgeMask}>
+          <Group>
+            {trailDotLayout.map((dot, index) => (
+              <Circle
+                key={`trail-${index}`}
+                cx={dot.cx}
+                cy={dot.cy}
+                r={TRAIL_DOT_R}
+                color={colorFromHeat(trailHeatBuf.current[index])}
+              />
+            ))}
+          </Group>
         </Mask>
       </Canvas>
 
@@ -347,34 +545,50 @@ export const PitchDial = memo(function PitchDial({
 
       <Canvas style={StyleSheet.absoluteFill}>
         <Mask mode="alpha" mask={edgeMask}>
-          {ticks.map((tick) => (
-            <RoundedRect
-              key={tick.key}
-              x={tick.cx - tick.width / 2}
-              y={tick.y}
-              width={tick.width}
-              height={tick.height}
-              r={Math.min(tick.radius, tick.height / 2)}
-              color={`rgba(255,255,255,${tick.opacity})`}
-            />
-          ))}
+          <Group>
+            {ticks.map((tick) => (
+              <RoundedRect
+                key={tick.key}
+                x={tick.cx - tick.width / 2}
+                y={tick.y}
+                width={tick.width}
+                height={tick.height}
+                r={Math.min(tick.radius, tick.height / 2)}
+                color={tick.color}
+              />
+            ))}
+            <Path path={centerMarkerPath} color={SWEEP_ORANGE} />
+          </Group>
         </Mask>
-        <Path path={centerMarkerPath} color={SWEEP_ORANGE} strokeCap="round" />
       </Canvas>
 
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          styles.headCore,
-          {
-            width: HEAD_SIZE,
-            height: HEAD_SIZE,
-            borderRadius: HEAD_SIZE / 2,
-            backgroundColor: palette.head,
-          },
-          animatedHeadStyle,
-        ]}
-      />
+      <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
+        <Mask mode="alpha" mask={edgeMask}>
+          <Group
+            transform={dialHeadTransform}
+            opacity={dialHeadOpacity}
+          >
+            <Circle
+              cx={0}
+              cy={0}
+              r={HEAD_SIZE / 2}
+              color="#FF6900"
+            />
+            <Circle
+              cx={0}
+              cy={0}
+              r={HEAD_SIZE / 2 - 1}
+              color={palette.head}
+            />
+            <Circle
+              cx={0}
+              cy={-(HEAD_SIZE / 2 - 2)}
+              r={2}
+              color="#FF6900"
+            />
+          </Group>
+        </Mask>
+      </Canvas>
     </View>
   );
 });
@@ -382,10 +596,5 @@ export const PitchDial = memo(function PitchDial({
 const styles = StyleSheet.create({
   container: {
     position: "relative",
-  },
-  headCore: {
-    position: "absolute",
-    borderWidth: 1,
-    borderColor: "#E87A0A",
   },
 });

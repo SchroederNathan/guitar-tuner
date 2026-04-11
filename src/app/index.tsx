@@ -1,5 +1,5 @@
-import { memo } from "react";
 import { StatusBar } from "expo-status-bar";
+import { memo } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -7,12 +7,12 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 
-import { STANDARD_TUNING } from "@/features/tuner/constants";
 import { PitchDial } from "@/features/tuner/components/PitchDial";
-import { useTuner } from "@/features/tuner/useTuner";
+import { STANDARD_TUNING } from "@/features/tuner/constants";
 import { StringId } from "@/features/tuner/types";
+import { useTuner } from "@/features/tuner/useTuner";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 function formatSignedCents(value: number | null, hasTarget: boolean) {
   if (!hasTarget || value === null) {
@@ -34,37 +34,36 @@ export default function Index() {
   );
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <View style={[styles.screen]}>
       <StatusBar style="light" />
-      <View style={styles.screen}>
-        <View style={styles.stack}>
-          <Text style={styles.centsReadout}>{centsValue}</Text>
-          <Text style={styles.centsSuffix}>cents</Text>
-          <Text style={styles.selectedString}>
-            {snapshot.selectedString ?? "Select a string"}
-          </Text>
 
-          <View style={styles.dialWrap}>
-            <PitchDial
-              width={dialWidth}
-              height={dialHeight}
-              displayCents={
-                snapshot.selectedString ? snapshot.displayCents : null
-              }
-              signalState={snapshot.signalState}
-              isInTune={snapshot.isInTune}
-              isStableInTune={snapshot.isStableInTune}
-            />
-          </View>
+      <View style={styles.stack}>
+        <Text style={styles.centsReadout}>{centsValue}</Text>
+        <Text style={styles.centsSuffix}>cents</Text>
+        <Text style={styles.selectedString}>
+          {snapshot.selectedString ?? "Select a string"}
+        </Text>
+
+        <View style={styles.dialWrap}>
+          <PitchDial
+            width={dialWidth}
+            height={dialHeight}
+            displayCents={
+              snapshot.selectedString ? snapshot.displayCents : null
+            }
+            signalState={snapshot.signalState}
+            isInTune={snapshot.isInTune}
+            isStableInTune={snapshot.isStableInTune}
+          />
         </View>
-
-        <CompactStringSelector
-          completedStrings={snapshot.completedStrings}
-          selectedString={snapshot.selectedString}
-          onSelect={selectString}
-        />
       </View>
-    </SafeAreaView>
+
+      <CompactStringSelector
+        completedStrings={snapshot.completedStrings}
+        selectedString={snapshot.selectedString}
+        onSelect={selectString}
+      />
+    </View>
   );
 }
 
@@ -77,8 +76,9 @@ const CompactStringSelector = memo(function CompactStringSelector({
   completedStrings: StringId[];
   onSelect: (stringId: StringId) => Promise<void>;
 }) {
+  const insets = useSafeAreaInsets();
   return (
-    <View style={styles.selectorRow}>
+    <View style={[styles.selectorRow, { paddingBottom: insets.bottom + 16 }]}>
       {STANDARD_TUNING.map((item) => (
         <StringButton
           key={item.id}
@@ -123,25 +123,22 @@ const StringButton = memo(function StringButton({
       >
         {id}
       </Text>
+      <View style={styles.stringIndicator} />
     </Pressable>
   );
 });
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#0A0E10",
-  },
   screen: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 20,
     justifyContent: "space-between",
-    backgroundColor: "#0A0E10",
   },
   stack: {
     flex: 1,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    boxShadow: " 0px -4px 2px -1px rgba(155, 155, 155, 0.1) inset",
+    experimental_backgroundImage: "linear-gradient(180deg, #171717, #0A0A0A, #0A0A0A)",
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
@@ -176,16 +173,23 @@ const styles = StyleSheet.create({
   selectorRow: {
     flexDirection: "row",
     justifyContent: "space-between",
+    experimental_backgroundImage: "linear-gradient(180deg, #171717, #0A0A0A)",
     gap: 8,
-    paddingTop: 8,
+    paddingTop: 48,
+    marginTop: -32,
+    zIndex: -1,
+    paddingHorizontal: 32,
   },
   stringButton: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 14,
+    flexDirection: "column",
+    gap: 6,
+    padding: 12,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    boxShadow: "0px 0px 0px 1.5px rgba(7, 7, 7, 1), 0px 2.5px 4px -2.5px rgba(155, 155, 155, 0.3) inset, 0px -2.5px 4px -2.5px rgba(7, 7, 7, 1) inset",
+    backgroundColor: "#171717"
   },
   stringButtonSelected: {
     backgroundColor: "rgba(255, 155, 46, 0.18)",
@@ -197,10 +201,17 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.96 }],
   },
   stringButtonText: {
-    color: "rgba(247, 248, 250, 0.72)",
+    color: "#525252",
     fontSize: 15,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
+  },
+
+  stringIndicator: {
+    height: 4,
+    width: 4,
+    backgroundColor: "#00C951",
+    borderRadius: 2,
   },
   stringButtonTextSelected: {
     color: "#FFF1E0",
