@@ -171,8 +171,42 @@ export function centsBetween(frequency: number, targetFrequency: number): number
   return 1200 * Math.log2(frequency / targetFrequency);
 }
 
+export function alignFrequencyToTarget(
+  frequency: number,
+  targetFrequency: number,
+  minFrequency: number = MIN_GUITAR_FREQUENCY,
+  maxFrequency: number = MAX_GUITAR_FREQUENCY
+): number {
+  const candidates = [
+    frequency,
+    frequency * 2,
+    frequency * 3,
+    frequency * 4,
+    frequency / 2,
+    frequency / 3,
+    frequency / 4,
+  ];
+
+  let bestFrequency = frequency;
+  let bestDistance = Math.abs(centsBetween(frequency, targetFrequency));
+
+  for (const candidate of candidates) {
+    if (candidate < minFrequency || candidate > maxFrequency) {
+      continue;
+    }
+
+    const distance = Math.abs(centsBetween(candidate, targetFrequency));
+    if (distance < bestDistance) {
+      bestFrequency = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  return bestFrequency;
+}
+
 export function clampCents(cents: number): number {
-  return Math.max(-50, Math.min(50, cents));
+  return Math.max(-100, Math.min(100, cents));
 }
 
 export function isWithinTune(cents: number): boolean {

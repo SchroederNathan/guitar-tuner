@@ -25,13 +25,6 @@ export interface WorkletPitchPacket {
 
 export type SignalState = "live" | "holding" | "idle";
 
-export interface PitchHistoryPoint {
-  at: number;
-  frequency: number;
-  cents: number;
-  confidence: number;
-}
-
 export interface TunerSnapshot {
   status: TunerStatus;
   selectedString: StringId | null;
@@ -43,7 +36,6 @@ export interface TunerSnapshot {
   displayCents: number | null;
   confidence: number;
   signalState: SignalState;
-  pitchHistory: PitchHistoryPoint[];
   isInTune: boolean;
   isStableInTune: boolean;
   completedStrings: StringId[];
