@@ -15,12 +15,8 @@ import { useTuner } from "@/features/tuner/useTuner";
 import { StringId } from "@/features/tuner/types";
 
 function formatSignedCents(value: number | null, hasTarget: boolean) {
-  if (!hasTarget) {
+  if (!hasTarget || value === null) {
     return "--";
-  }
-
-  if (value === null) {
-    return "0";
   }
 
   const rounded = Math.round(value);
@@ -52,7 +48,9 @@ export default function Index() {
             <PitchDial
               width={dialWidth}
               height={dialHeight}
-              displayCents={snapshot.displayCents}
+              displayCents={
+                snapshot.selectedString ? snapshot.displayCents : null
+              }
               signalState={snapshot.signalState}
               isInTune={snapshot.isInTune}
               isStableInTune={snapshot.isStableInTune}

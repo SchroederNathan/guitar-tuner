@@ -1,13 +1,13 @@
 import {
+  BlurMask,
   Canvas,
-  Circle,
-  Line,
   LinearGradient,
   Mask,
   Path,
   Rect,
+  RoundedRect,
   Skia,
-  vec,
+  vec
 } from "@shopify/react-native-skia";
 import { memo, useEffect, useMemo } from "react";
 import { StyleSheet, View } from "react-native";
@@ -27,7 +27,9 @@ const TICK_COUNT = 41;
 const START_ANGLE = (160 * Math.PI) / 180;
 const END_ANGLE = (20 * Math.PI) / 180;
 const SWEEP_ORANGE = "#FF9B2E";
-const SWEEP_CENTER_PAD = 0.008;
+const SWEEP_TRAIL_COLOR = "rgba(255, 155, 46, 0.26)";
+const SWEEP_TRAIL_STROKE_WIDTH = 9;
+const SWEEP_TRAIL_BLUR = 10;
 
 export interface PitchDialProps {
   width: number;
@@ -128,11 +130,55 @@ function createDialPath(
   return path;
 }
 
-function createTrianglePath(centerX: number, tipY: number, size: number) {
+function createRoundedTrianglePath(
+  centerX: number,
+  tipY: number,
+  size: number,
+  cornerRadius: number
+) {
+  const halfBase = size * 0.7;
+  const tip = { x: centerX, y: tipY };
+  const left = { x: centerX - halfBase, y: tipY - size };
+  const right = { x: centerX + halfBase, y: tipY - size };
+  const verts = [tip, left, right];
   const path = Skia.Path.Make();
-  path.moveTo(centerX, tipY);
-  path.lineTo(centerX - size * 0.7, tipY - size);
-  path.lineTo(centerX + size * 0.7, tipY - size);
+  const n = verts.length;
+
+  for (let i = 0; i < n; i += 1) {
+    const prev = verts[(i - 1 + n) % n];
+    const curr = verts[i];
+    const next = verts[(i + 1) % n];
+
+    const vInX = prev.x - curr.x;
+    const vInY = prev.y - curr.y;
+    const vOutX = next.x - curr.x;
+    const vOutY = next.y - curr.y;
+    const lenIn = Math.hypot(vInX, vInY);
+    const lenOut = Math.hypot(vOutX, vOutY);
+    const uInX = vInX / lenIn;
+    const uInY = vInY / lenIn;
+
+    const dot = (vInX * vOutX + vInY * vOutY) / (lenIn * lenOut);
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+    const tanHalf = Math.tan(angle / 2);
+    const inset = Math.min(
+      cornerRadius / tanHalf,
+      lenIn * 0.45,
+      lenOut * 0.45
+    );
+    const r = inset * tanHalf;
+
+    const startX = curr.x + uInX * inset;
+    const startY = curr.y + uInY * inset;
+
+    if (i === 0) {
+      path.moveTo(startX, startY);
+    } else {
+      path.lineTo(startX, startY);
+    }
+    path.arcToTangent(curr.x, curr.y, next.x, next.y, r);
+  }
+
   path.close();
   return path;
 }
@@ -162,13 +208,13 @@ export const PitchDial = memo(function PitchDial({
 
   const palette = isStableInTune || isInTune
     ? {
-        head: "#72F2A4",
-        glow: "rgba(114, 242, 164, 0.12)",
-      }
+      head: "#72F2A4",
+      glow: "rgba(114, 242, 164, 0.12)",
+    }
     : {
-        head: "#FF9B2E",
-        glow: "rgba(255, 155, 46, 0.14)",
-      };
+      head: "#FF9B2E",
+      glow: "rgba(255, 155, 46, 0.14)",
+    };
 
   const headCents = useSharedValue(displayCents ?? 0);
   const headOpacity = useSharedValue(signalState === "idle" ? 0.18 : 1);
@@ -176,7 +222,10 @@ export const PitchDial = memo(function PitchDial({
   const sweepVisibility = useSharedValue(displayCents === null ? 0 : 1);
 
   useEffect(() => {
-    headCents.set(displayCents ?? 0);
+    headCents.set(withTiming(displayCents ?? 0, {
+      duration: signalState === "live" ? 48 : 120,
+      easing: Easing.out(Easing.cubic),
+    }));
   }, [displayCents, headCents, signalState]);
 
   useEffect(() => {
@@ -226,7 +275,7 @@ export const PitchDial = memo(function PitchDial({
   );
 
   const centerMarkerPath = useMemo(
-    () => createTrianglePath(centerX, tickBottomY - 16, 8),
+    () => createRoundedTrianglePath(centerX, tickBottomY - 24, 12, 2),
     [centerX, tickBottomY]
   );
 
@@ -243,12 +292,16 @@ export const PitchDial = memo(function PitchDial({
       );
       const isMajor = index % 5 === 0;
       const bottom = point.y - 8;
+      const height = isMajor ? 14 : 8;
+      const tickWidth = isMajor ? 2 : 1.5;
 
       return {
         key: `${index}-${progress}`,
-        x: point.x,
-        y1: bottom - (isMajor ? 14 : 8),
-        y2: bottom,
+        cx: point.x,
+        y: bottom - height,
+        width: tickWidth,
+        height,
+        radius: tickWidth / 2,
         opacity: isMajor ? 0.7 : 0.4,
       };
     });
@@ -256,16 +309,12 @@ export const PitchDial = memo(function PitchDial({
 
   const sweepStart = useDerivedValue(() => {
     const progress = toDialProgress(headCents.value);
-    return Math.max(0, Math.min(0.5 - SWEEP_CENTER_PAD, progress));
+    return Math.max(0, progress);
   });
 
   const sweepEnd = useDerivedValue(() => {
     const progress = toDialProgress(headCents.value);
-    return Math.min(1, Math.max(0.5 + SWEEP_CENTER_PAD, progress));
-  });
-
-  const sweepOpacity = useDerivedValue(() => {
-    return sweepVisibility.value * headOpacity.value;
+    return Math.min(1, progress);
   });
 
   const edgeMask = useMemo(
@@ -292,13 +341,6 @@ export const PitchDial = memo(function PitchDial({
   return (
     <View style={[styles.container, { width, height }]}>
       <Canvas style={StyleSheet.absoluteFill}>
-        <Line
-          p1={vec(centerX, tickBottomY - 30)}
-          p2={vec(centerX, centerArcPoint.y + 10)}
-          color="rgba(255,255,255,0.07)"
-          strokeWidth={1}
-        />
-
         <Mask mode="alpha" mask={edgeMask}>
           <Path
             path={dialPath}
@@ -307,38 +349,51 @@ export const PitchDial = memo(function PitchDial({
             strokeCap="round"
             color="rgba(255,255,255,0.18)"
           />
+        </Mask>
+      </Canvas>
 
-          {ticks.map((tick) => (
-            <Line
-              key={tick.key}
-              p1={vec(tick.x, tick.y1)}
-              p2={vec(tick.x, tick.y2)}
-              color={`rgba(255,255,255,${tick.opacity})`}
-              strokeWidth={1.25}
-              strokeCap="round"
-            />
-          ))}
+      <Canvas style={StyleSheet.absoluteFill}>
+        <Mask mode="alpha" mask={edgeMask}>
+          <Path
+            path={dialPath}
+            style="stroke"
+            strokeWidth={SWEEP_TRAIL_STROKE_WIDTH}
+            strokeCap="round"
+            start={sweepStart}
+            end={sweepEnd}
+            color={SWEEP_TRAIL_COLOR}
+          >
+            <BlurMask blur={SWEEP_TRAIL_BLUR} />
+          </Path>
 
           <Path
             path={dialPath}
             style="stroke"
-            strokeWidth={5}
+            strokeWidth={3}
             strokeCap="round"
             start={sweepStart}
             end={sweepEnd}
             color={SWEEP_ORANGE}
-            opacity={sweepOpacity}
-          />
-          <Circle
-            cx={centerArcPoint.x}
-            cy={centerArcPoint.y}
-            r={3.5}
-            color={SWEEP_ORANGE}
-            opacity={sweepOpacity}
           />
         </Mask>
+      </Canvas>
 
-        <Path path={centerMarkerPath} color={SWEEP_ORANGE} />
+      <Canvas style={StyleSheet.absoluteFill}>
+        <Mask mode="alpha" mask={edgeMask}>
+          {ticks.map((tick) => (
+            <RoundedRect
+              key={tick.key}
+              x={tick.cx - tick.width / 2}
+              y={tick.y}
+              width={tick.width}
+              height={tick.height}
+              r={Math.min(tick.radius, tick.height / 2)}
+              color={`rgba(255,255,255,${tick.opacity})`}
+            />
+          ))}
+        </Mask>
+
+        <Path path={centerMarkerPath} color={SWEEP_ORANGE} strokeCap="round" />
       </Canvas>
 
       <Animated.View
