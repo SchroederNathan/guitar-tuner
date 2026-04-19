@@ -36,13 +36,14 @@ const END_ANGLE = (20 * Math.PI) / 180;
 const SWEEP_ORANGE = "#FF6900";
 const TRAIL_WINDOW_MS = 4000;
 const TRAIL_ROWS = 10;
-const TRAIL_CAP = 360;
+const TRAIL_CAP = 96;
 const TRAIL_DOT_R = 2;
 const TRAIL_BASE_Y_OFFSET = 14;
 const TRAIL_ROW_GAP = 8;
 const TRAIL_HEAT_SIGMA = 0.072;
 const TRAIL_HEAT_GAIN = 0.76;
 const TRAIL_DOT_COUNT = TRAIL_ROWS * TICK_COUNT;
+const TRAIL_FRAME_INTERVAL_MS = 120;
 const TRAIL_HEAT_COLD = { r: 0x40, g: 0x40, b: 0x40 };
 const TRAIL_HEAT_HOT = { r: 0xff, g: 0x69, b: 0x00 };
 const TRAIL_DOT_TEX = 48;
@@ -307,6 +308,7 @@ export const PitchDial = memo(function PitchDial({
   const trailP = useSharedValue(new Float32Array(TRAIL_CAP));
   const trailStart = useSharedValue(0);
   const trailLen = useSharedValue(0);
+  const trailLastFrameAt = useSharedValue(0);
   const trailHeat = useSharedValue(new Float32Array(TRAIL_DOT_COUNT));
   const trailHeatEpoch = useSharedValue(0);
 
@@ -325,13 +327,21 @@ export const PitchDial = memo(function PitchDial({
     if (!recordTrail) {
       trailLen.value = 0;
       trailStart.value = 0;
+      trailLastFrameAt.value = 0;
       runOnUI(() => {
         "worklet";
         trailHeat.value.fill(0);
         trailHeatEpoch.value += 1;
       })();
     }
-  }, [recordTrail, trailHeat, trailHeatEpoch, trailLen, trailStart]);
+  }, [
+    recordTrail,
+    trailHeat,
+    trailHeatEpoch,
+    trailLastFrameAt,
+    trailLen,
+    trailStart,
+  ]);
 
   const onTrailFrame = useCallback(
     (frameInfo: FrameInfo) => {
@@ -341,6 +351,11 @@ export const PitchDial = memo(function PitchDial({
       }
 
       const now = frameInfo.timestamp;
+      if (now - trailLastFrameAt.value < TRAIL_FRAME_INTERVAL_MS) {
+        return;
+      }
+
+      trailLastFrameAt.value = now;
       const cents = headCents.value;
       const p = toDialProgress(cents);
 

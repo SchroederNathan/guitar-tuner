@@ -41,7 +41,10 @@ export const TARGET_LABELS = Object.fromEntries(
 
 export const AUDIO_SAMPLE_RATE = 16000;
 export const WORKLET_BUFFER_LENGTH = 1024;
-export const ANALYSIS_BUFFER_LENGTH = 4096;
+export const ANALYSIS_BUFFER_LENGTH = 2048;
+export const ANALYSIS_INTERVAL_MS = 96;
+export const MAX_CAPTURE_LAG_MS = 160;
+export const DIAGNOSTIC_LOG_INTERVAL_MS = 5000;
 export const MIN_GUITAR_FREQUENCY = 70;
 export const MAX_GUITAR_FREQUENCY = 400;
 export const RMS_NOISE_GATE = 0.0025;

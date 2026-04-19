@@ -26,6 +26,20 @@ export interface PitchReading {
   rms: number;
 }
 
+export interface PitchDetectorScratch {
+  cumulative: Float32Array;
+  difference: Float32Array;
+}
+
+export function createPitchDetectorScratch(
+  initialSize: number
+): PitchDetectorScratch {
+  return {
+    cumulative: new Float32Array(initialSize),
+    difference: new Float32Array(initialSize),
+  };
+}
+
 export function calculateRms(samples: ArrayLike<number>): number {
   if (samples.length === 0) {
     return 0;
@@ -46,7 +60,8 @@ export function detectPitchYin(
   sampleRate: number,
   minFrequency: number = MIN_GUITAR_FREQUENCY,
   maxFrequency: number = MAX_GUITAR_FREQUENCY,
-  threshold: number = 0.12
+  threshold: number = 0.12,
+  scratch?: PitchDetectorScratch
 ): PitchReading | null {
   const sampleCount = samples.length;
   if (sampleCount < 2) {
@@ -64,8 +79,21 @@ export function detectPitchYin(
     return null;
   }
 
-  const difference = new Float32Array(tauMax + 1);
-  const cumulative = new Float32Array(tauMax + 1);
+  if (scratch) {
+    if (scratch.difference.length <= tauMax) {
+      scratch.difference = new Float32Array(tauMax + 1);
+    }
+
+    if (scratch.cumulative.length <= tauMax) {
+      scratch.cumulative = new Float32Array(tauMax + 1);
+    }
+  }
+
+  const difference = scratch?.difference ?? new Float32Array(tauMax + 1);
+  const cumulative = scratch?.cumulative ?? new Float32Array(tauMax + 1);
+
+  difference.fill(0, 0, tauMin);
+  cumulative.fill(0, 0, tauMin);
 
   for (let tau = tauMin; tau <= tauMax; tau += 1) {
     let sum = 0;

@@ -6,9 +6,12 @@ import {
 
 import {
   ANALYSIS_BUFFER_LENGTH,
+  ANALYSIS_INTERVAL_MS,
   AUDIO_SAMPLE_RATE,
   CONFIDENCE_THRESHOLD,
+  DIAGNOSTIC_LOG_INTERVAL_MS,
   IN_TUNE_CENTS,
+  MAX_CAPTURE_LAG_MS,
   MAX_GUITAR_FREQUENCY,
   MIN_GUITAR_FREQUENCY,
   RMS_NOISE_GATE,
@@ -21,6 +24,7 @@ import {
   alignFrequencyToTarget,
   centsBetween,
   clampCents,
+  createPitchDetectorScratch,
   detectPitchYin,
   frequencyToDetectedNote,
   isWithinTune,
@@ -59,7 +63,20 @@ export class TunerEngine {
   private stableSince: number | null = null;
   private lastReliablePacketAt = 0;
   private rollingBuffer = new Float32Array(ANALYSIS_BUFFER_LENGTH);
+  private analysisBuffer = new Float32Array(ANALYSIS_BUFFER_LENGTH);
+  private pitchScratch = createPitchDetectorScratch(
+    Math.floor(AUDIO_SAMPLE_RATE / MIN_GUITAR_FREQUENCY) + 2
+  );
   private rollingIndex = 0;
+  private bufferedSampleCount = 0;
+  private analysisSessionStartedAtMs = 0;
+  private lastAnalysisAtMs = Number.NEGATIVE_INFINITY;
+  private lastAudioBufferWhenMs: number | null = null;
+  private captureLagMs = 0;
+  private processingMs = 0;
+  private lastBufferMs = 0;
+  private droppedBufferCount = 0;
+  private lastDiagnosticLogAtMs = 0;
 
   subscribe = (listener: Listener) => {
     this.listeners.add(listener);
@@ -72,10 +89,7 @@ export class TunerEngine {
 
   selectString = async (stringId: StringId) => {
     if (this.snapshot.selectedString !== stringId) {
-      this.stableSince = null;
-      this.lastReliablePacketAt = 0;
-      this.rollingBuffer = new Float32Array(ANALYSIS_BUFFER_LENGTH);
-      this.rollingIndex = 0;
+      this.resetAnalysisState();
     }
 
     this.setSnapshot({
@@ -101,10 +115,7 @@ export class TunerEngine {
 
   cleanup = async () => {
     this.startPromise = null;
-    this.stableSince = null;
-    this.lastReliablePacketAt = 0;
-    this.rollingBuffer = new Float32Array(ANALYSIS_BUFFER_LENGTH);
-    this.rollingIndex = 0;
+    this.resetAnalysisState();
 
     const recorder = this.recorder;
 
@@ -228,15 +239,39 @@ export class TunerEngine {
           channelCount: 1,
         },
         (event) => {
+          const callbackStartedAtMs = this.nowMs();
+          const bufferWhenMs = event.when * 1000;
+          const bufferDurationMs =
+            (event.numFrames / event.buffer.sampleRate) * 1000;
+
+          this.lastBufferMs =
+            this.lastAudioBufferWhenMs === null
+              ? bufferDurationMs
+              : Math.max(0, bufferWhenMs - this.lastAudioBufferWhenMs);
+          this.lastAudioBufferWhenMs = bufferWhenMs;
+          this.captureLagMs = Math.max(
+            0,
+            callbackStartedAtMs -
+              (this.analysisSessionStartedAtMs + bufferWhenMs)
+          );
+
           const samples = event.buffer.getChannelData(0);
           this.pushSamples(samples);
 
-          const analysisWindow = this.getAnalysisWindow();
+          if (!this.shouldAnalyzeBuffer(callbackStartedAtMs)) {
+            this.processingMs = this.nowMs() - callbackStartedAtMs;
+            this.maybeLogDiagnostics();
+            return;
+          }
+
+          this.copyAnalysisWindow();
           const pitch = detectPitchYin(
-            analysisWindow,
+            this.analysisBuffer,
             event.buffer.sampleRate,
             MIN_GUITAR_FREQUENCY,
-            MAX_GUITAR_FREQUENCY
+            MAX_GUITAR_FREQUENCY,
+            undefined,
+            this.pitchScratch
           );
 
           this.handleWorkletPacket({
@@ -247,12 +282,18 @@ export class TunerEngine {
                 : null,
             rms: pitch?.rms ?? 0,
           });
+
+          this.processingMs = this.nowMs() - callbackStartedAtMs;
+          this.maybeLogDiagnostics();
         }
       );
 
       if (callbackResult.status === "error") {
         throw new Error(callbackResult.message);
       }
+
+      this.resetAnalysisState();
+      this.analysisSessionStartedAtMs = this.nowMs();
 
       const recorderResult = recorder.start();
       if (recorderResult.status === "error") {
@@ -361,21 +402,111 @@ export class TunerEngine {
   };
 
   private pushSamples(samples: Float32Array) {
-    for (let index = 0; index < samples.length; index += 1) {
-      this.rollingBuffer[this.rollingIndex] = samples[index] ?? 0;
-      this.rollingIndex = (this.rollingIndex + 1) % ANALYSIS_BUFFER_LENGTH;
+    let sourceStart = 0;
+    let remaining = samples.length;
+
+    while (remaining > 0) {
+      const writable = Math.min(
+        ANALYSIS_BUFFER_LENGTH - this.rollingIndex,
+        remaining
+      );
+
+      this.rollingBuffer.set(
+        samples.subarray(sourceStart, sourceStart + writable),
+        this.rollingIndex
+      );
+
+      this.rollingIndex = (this.rollingIndex + writable) % ANALYSIS_BUFFER_LENGTH;
+      sourceStart += writable;
+      remaining -= writable;
+    }
+
+    this.bufferedSampleCount = Math.min(
+      ANALYSIS_BUFFER_LENGTH,
+      this.bufferedSampleCount + samples.length
+    );
+  }
+
+  private copyAnalysisWindow() {
+    const tailLength = ANALYSIS_BUFFER_LENGTH - this.rollingIndex;
+
+    this.analysisBuffer.set(this.rollingBuffer.subarray(this.rollingIndex));
+
+    if (this.rollingIndex > 0) {
+      this.analysisBuffer.set(
+        this.rollingBuffer.subarray(0, this.rollingIndex),
+        tailLength
+      );
     }
   }
 
-  private getAnalysisWindow() {
-    const window = new Float32Array(ANALYSIS_BUFFER_LENGTH);
-
-    for (let index = 0; index < ANALYSIS_BUFFER_LENGTH; index += 1) {
-      window[index] =
-        this.rollingBuffer[(this.rollingIndex + index) % ANALYSIS_BUFFER_LENGTH] ?? 0;
+  private shouldAnalyzeBuffer(nowMs: number) {
+    if (!this.snapshot.selectedString) {
+      return false;
     }
 
-    return window;
+    if (this.bufferedSampleCount < ANALYSIS_BUFFER_LENGTH) {
+      return false;
+    }
+
+    if (this.captureLagMs > MAX_CAPTURE_LAG_MS) {
+      this.droppedBufferCount += 1;
+      return false;
+    }
+
+    if (nowMs - this.lastAnalysisAtMs < ANALYSIS_INTERVAL_MS) {
+      return false;
+    }
+
+    this.lastAnalysisAtMs = nowMs;
+    return true;
+  }
+
+  private maybeLogDiagnostics() {
+    if (!__DEV__) {
+      return;
+    }
+
+    const nowMs = this.nowMs();
+    if (nowMs - this.lastDiagnosticLogAtMs < DIAGNOSTIC_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    if (
+      this.captureLagMs < MAX_CAPTURE_LAG_MS &&
+      this.droppedBufferCount === 0
+    ) {
+      return;
+    }
+
+    this.lastDiagnosticLogAtMs = nowMs;
+    console.debug("[tuner] audio diagnostics", {
+      captureLagMs: Math.round(this.captureLagMs),
+      droppedBufferCount: this.droppedBufferCount,
+      lastBufferMs: Math.round(this.lastBufferMs),
+      processingMs: Math.round(this.processingMs),
+    });
+  }
+
+  private nowMs() {
+    return globalThis.performance?.now?.() ?? Date.now();
+  }
+
+  private resetAnalysisState() {
+    this.stableSince = null;
+    this.lastReliablePacketAt = 0;
+    this.rollingBuffer.fill(0);
+    this.analysisBuffer.fill(0);
+    this.rollingIndex = 0;
+    this.bufferedSampleCount = 0;
+    this.analysisSessionStartedAtMs = 0;
+    this.lastAnalysisAtMs = Number.NEGATIVE_INFINITY;
+    this.lastAudioBufferWhenMs = null;
+    this.captureLagMs = 0;
+    this.processingMs = 0;
+    this.lastBufferMs = 0;
+    this.droppedBufferCount = 0;
+    this.lastDiagnosticLogAtMs = 0;
   }
 
   private setSnapshot = (partial: Partial<TunerSnapshot>) => {
