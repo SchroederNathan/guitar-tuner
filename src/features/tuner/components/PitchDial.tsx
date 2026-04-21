@@ -6,24 +6,21 @@ import {
   LinearGradient,
   Mask,
   Path,
+  processTransform3d,
   Rect,
   RoundedRect,
   Skia,
-  useColorBuffer,
+  useRSXformBuffer,
   useTexture,
-  processTransform3d,
   vec,
 } from "@shopify/react-native-skia";
-import { memo, useCallback, useEffect, useMemo } from "react";
+import { memo, useEffect, useMemo } from "react";
 import { StyleSheet, View } from "react-native";
 import {
   Easing,
-  runOnUI,
   useDerivedValue,
-  useFrameCallback,
   useSharedValue,
   withTiming,
-  type FrameInfo,
 } from "react-native-reanimated";
 
 import { SignalState } from "@/features/tuner/types";
@@ -31,23 +28,17 @@ import { SignalState } from "@/features/tuner/types";
 const MAX_CENTS = 100;
 const HEAD_SIZE = 12;
 const TICK_COUNT = 41;
-const START_ANGLE = (160 * Math.PI) / 180;
-const END_ANGLE = (20 * Math.PI) / 180;
 const SWEEP_ORANGE = "#FF6900";
-const TRAIL_WINDOW_MS = 4000;
+const CYLINDER_THETA_MAX = 1.12;
+const CYLINDER_EDGE_SCALE = 0.58;
+const TRACK_SIDE_PADDING = 18;
+const RAIL_SEGMENT_COUNT = 72;
 const TRAIL_ROWS = 10;
-const TRAIL_CAP = 96;
 const TRAIL_DOT_R = 2;
-const TRAIL_BASE_Y_OFFSET = 14;
-const TRAIL_ROW_GAP = 8;
-const TRAIL_HEAT_SIGMA = 0.072;
-const TRAIL_HEAT_GAIN = 0.76;
+const TRAIL_DOT_TEX = 24;
+const TRAIL_DOT_TEX_R = 9;
 const TRAIL_DOT_COUNT = TRAIL_ROWS * TICK_COUNT;
-const TRAIL_FRAME_INTERVAL_MS = 120;
 const TRAIL_HEAT_COLD = { r: 0x40, g: 0x40, b: 0x40 };
-const TRAIL_HEAT_HOT = { r: 0xff, g: 0x69, b: 0x00 };
-const TRAIL_DOT_TEX = 48;
-const TRAIL_DOT_TEX_R = 17;
 const TRAIL_ATLAS_SCALE = TRAIL_DOT_R / TRAIL_DOT_TEX_R;
 
 export interface PitchDialProps {
@@ -86,20 +77,6 @@ function EdgeFadeMaskRect({
   );
 }
 
-function writeHeatToSkiaColor(
-  color: Float32Array,
-  t: number,
-  cold: typeof TRAIL_HEAT_COLD,
-  hot: typeof TRAIL_HEAT_HOT
-) {
-  "worklet";
-  const k = Math.max(0, Math.min(1, t));
-  color[0] = (cold.r + (hot.r - cold.r) * k) / 255;
-  color[1] = (cold.g + (hot.g - cold.g) * k) / 255;
-  color[2] = (cold.b + (hot.b - cold.b) * k) / 255;
-  color[3] = 1;
-}
-
 function clamp(value: number, min: number, max: number) {
   "worklet";
   return Math.max(min, Math.min(max, value));
@@ -110,103 +87,53 @@ function mix(start: number, end: number, progress: number) {
   return start + (end - start) * progress;
 }
 
+function alpha(color: typeof TRAIL_HEAT_COLD, opacity: number) {
+  return `rgba(${color.r}, ${color.g}, ${color.b}, ${opacity})`;
+}
+
 function toDialProgress(cents: number) {
   "worklet";
   return (clamp(cents, -MAX_CENTS, MAX_CENTS) + MAX_CENTS) / (MAX_CENTS * 2);
 }
 
-function getDialPointAtProgress(
+function getCylinderProjection(
   progress: number,
   width: number,
-  arcPadding: number,
-  arcTop: number,
-  edgeLift: number
+  sidePadding: number
 ) {
   "worklet";
-  const clampedProgress = clamp(progress, 0, 1);
   const centerX = width / 2;
-  const middleY = arcTop;
-  const edgeY = arcTop - edgeLift;
-  const edgeSine = Math.sin(END_ANGLE);
-  const radiusY = (middleY - edgeY) / (1 - edgeSine);
-  const centerY = middleY - radiusY;
-  const radiusX = (centerX - arcPadding) / Math.abs(Math.cos(START_ANGLE));
-  const angle = mix(START_ANGLE, END_ANGLE, clampedProgress);
-
+  const clampedProgress = clamp(progress, 0, 1);
+  const theta = mix(-CYLINDER_THETA_MAX, CYLINDER_THETA_MAX, clampedProgress);
+  const radius = (centerX - sidePadding) / Math.sin(CYLINDER_THETA_MAX);
+  const depth = Math.cos(theta);
+  const minDepth = Math.cos(CYLINDER_THETA_MAX);
+  const normalizedDepth = clamp((depth - minDepth) / (1 - minDepth), 0, 1);
+  const scale = mix(CYLINDER_EDGE_SCALE, 1, normalizedDepth);
   return {
-    x: centerX + radiusX * Math.cos(angle),
-    y: centerY + radiusY * Math.sin(angle),
+    x: centerX + radius * Math.sin(theta),
+    depth,
+    normalizedDepth,
+    scale,
   };
 }
 
-function getDialPoint(
+function getDialHeadPoint(
   cents: number,
   width: number,
-  arcPadding: number,
-  arcTop: number,
-  edgeLift: number
+  sidePadding: number,
+  bandY: number
 ) {
   "worklet";
-  return getDialPointAtProgress(
+  const projection = getCylinderProjection(
     toDialProgress(cents),
     width,
-    arcPadding,
-    arcTop,
-    edgeLift
+    sidePadding
   );
-}
-
-/** Radians: direction along the dial arc (increasing cents / progress), tangent to the ellipse. */
-function getDialTangentAngle(
-  cents: number,
-  width: number,
-  arcPadding: number,
-  arcTop: number,
-  edgeLift: number
-) {
-  "worklet";
-  const progress = toDialProgress(cents);
-  const clampedProgress = clamp(progress, 0, 1);
-  const centerX = width / 2;
-  const middleY = arcTop;
-  const edgeY = arcTop - edgeLift;
-  const edgeSine = Math.sin(END_ANGLE);
-  const radiusY = (middleY - edgeY) / (1 - edgeSine);
-  const radiusX = (centerX - arcPadding) / Math.abs(Math.cos(START_ANGLE));
-  const angleSpan = END_ANGLE - START_ANGLE;
-  const theta = mix(START_ANGLE, END_ANGLE, clampedProgress);
-  const dxDp = -radiusX * Math.sin(theta) * angleSpan;
-  const dyDp = radiusY * Math.cos(theta) * angleSpan;
-  return Math.atan2(dyDp, dxDp);
-}
-
-function createDialPath(
-  width: number,
-  arcPadding: number,
-  arcTop: number,
-  edgeLift: number,
-  sampleCount: number = 96
-) {
-  const path = Skia.Path.Make();
-
-  for (let index = 0; index <= sampleCount; index += 1) {
-    const progress = index / sampleCount;
-    const point = getDialPointAtProgress(
-      progress,
-      width,
-      arcPadding,
-      arcTop,
-      edgeLift
-    );
-
-    if (index === 0) {
-      path.moveTo(point.x, point.y);
-    } else {
-      path.lineTo(point.x, point.y);
-    }
-  }
-
-  return path;
+  return {
+    x: projection.x,
+    y: bandY,
+  };
 }
 
 function createRoundedTrianglePath(
@@ -270,18 +197,31 @@ export const PitchDial = memo(function PitchDial({
   isInTune,
   isStableInTune,
 }: PitchDialProps) {
-  const arcPadding = 18;
-  const arcTop = Math.max(48, height * 0.24);
-  const edgeLift = Math.max(12, height * 0.1);
   const centerX = width / 2;
-  const centerArcPoint = getDialPointAtProgress(
-    0.5,
-    width,
-    arcPadding,
-    arcTop,
-    edgeLift
+  const centerColumnProgress = (TICK_COUNT / 2) / (TICK_COUNT - 1);
+  const nextCenterColumnProgress = (TICK_COUNT / 2 + 1) / (TICK_COUNT - 1);
+  const trailRowGap = Math.max(
+    TRAIL_DOT_R * 2 + 1,
+    getCylinderProjection(
+      nextCenterColumnProgress,
+      width,
+      TRACK_SIDE_PADDING
+    ).x -
+    getCylinderProjection(
+      centerColumnProgress,
+      width,
+      TRACK_SIDE_PADDING
+    ).x
   );
-  const tickBottomY = centerArcPoint.y - 8;
+  const trailBaseYOffset = trailRowGap;
+  const bottomHeatExtent =
+    trailBaseYOffset + (TRAIL_ROWS - 1) * trailRowGap + TRAIL_DOT_R + 4;
+  const topMarkerExtent = 38;
+  const bandY = clamp(
+    height * 0.4,
+    topMarkerExtent,
+    Math.max(topMarkerExtent, height - bottomHeatExtent)
+  );
 
   const palette = isStableInTune || isInTune
     ? {
@@ -294,137 +234,6 @@ export const PitchDial = memo(function PitchDial({
   const headCents = useSharedValue(displayCents ?? 0);
   const headOpacity = useSharedValue(signalState === "idle" ? 0.18 : 1);
   const headScale = useSharedValue(isStableInTune ? 0.94 : 1);
-
-  const recordTrail =
-    (signalState === "live" || signalState === "holding") &&
-    displayCents !== null;
-
-  const recordTrailSv = useSharedValue(recordTrail);
-  useEffect(() => {
-    recordTrailSv.value = recordTrail;
-  }, [recordTrail, recordTrailSv]);
-
-  const trailT = useSharedValue(new Float64Array(TRAIL_CAP));
-  const trailP = useSharedValue(new Float32Array(TRAIL_CAP));
-  const trailStart = useSharedValue(0);
-  const trailLen = useSharedValue(0);
-  const trailLastFrameAt = useSharedValue(0);
-  const trailHeat = useSharedValue(new Float32Array(TRAIL_DOT_COUNT));
-  const trailHeatEpoch = useSharedValue(0);
-
-  const trailDotTexture = useTexture(
-    <Circle
-      cx={TRAIL_DOT_TEX / 2}
-      cy={TRAIL_DOT_TEX / 2}
-      r={TRAIL_DOT_TEX_R}
-      color="#FFFFFF"
-      antiAlias
-    />,
-    { width: TRAIL_DOT_TEX, height: TRAIL_DOT_TEX }
-  );
-
-  useEffect(() => {
-    if (!recordTrail) {
-      trailLen.value = 0;
-      trailStart.value = 0;
-      trailLastFrameAt.value = 0;
-      runOnUI(() => {
-        "worklet";
-        trailHeat.value.fill(0);
-        trailHeatEpoch.value += 1;
-      })();
-    }
-  }, [
-    recordTrail,
-    trailHeat,
-    trailHeatEpoch,
-    trailLastFrameAt,
-    trailLen,
-    trailStart,
-  ]);
-
-  const onTrailFrame = useCallback(
-    (frameInfo: FrameInfo) => {
-      "worklet";
-      if (!recordTrailSv.value) {
-        return;
-      }
-
-      const now = frameInfo.timestamp;
-      if (now - trailLastFrameAt.value < TRAIL_FRAME_INTERVAL_MS) {
-        return;
-      }
-
-      trailLastFrameAt.value = now;
-      const cents = headCents.value;
-      const p = toDialProgress(cents);
-
-      let start = trailStart.value;
-      let len = trailLen.value;
-      const tt = trailT.value;
-      const pp = trailP.value;
-
-      while (len > 0 && now - tt[start] > TRAIL_WINDOW_MS) {
-        start = (start + 1) % TRAIL_CAP;
-        len -= 1;
-      }
-
-      if (len < TRAIL_CAP) {
-        const w = (start + len) % TRAIL_CAP;
-        tt[w] = now;
-        pp[w] = p;
-        len += 1;
-      } else {
-        tt[start] = now;
-        pp[start] = p;
-        start = (start + 1) % TRAIL_CAP;
-      }
-
-      trailStart.value = start;
-      trailLen.value = len;
-
-      const cols = TICK_COUNT;
-      const rows = TRAIL_ROWS;
-      const heatArr = trailHeat.value;
-      const sigma = TRAIL_HEAT_SIGMA;
-      const twoSigmaSq = 2 * sigma * sigma;
-      const gain = TRAIL_HEAT_GAIN;
-      const rowMs = TRAIL_WINDOW_MS / rows;
-      const colDenom = cols - 1;
-
-      heatArr.fill(0);
-
-      for (let k = 0; k < len; k += 1) {
-        const idx = (start + k) % TRAIL_CAP;
-        const age = now - tt[idx];
-        const row = (age / rowMs) | 0;
-        if (row < 0 || row >= rows) {
-          continue;
-        }
-        const pk = pp[idx];
-        const base = row * cols;
-        for (let c = 0; c < cols; c += 1) {
-          const colProg = c / colDenom;
-          const dp = pk - colProg;
-          heatArr[base + c] += Math.exp(-(dp * dp) / twoSigmaSq);
-        }
-      }
-
-      for (let i = 0; i < heatArr.length; i += 1) {
-        heatArr[i] = Math.min(1, heatArr[i] * gain);
-      }
-
-      trailHeatEpoch.value += 1;
-    },
-    // Worklet only reads stable SharedValue refs (layout is fixed for this instance).
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
-    []
-  );
-
-  const trailFrame = useFrameCallback(onTrailFrame, false);
-  useEffect(() => {
-    trailFrame.setActive(recordTrail);
-  }, [recordTrail, trailFrame]);
 
   useEffect(() => {
     headCents.set(withTiming(displayCents ?? 0, {
@@ -450,19 +259,11 @@ export const PitchDial = memo(function PitchDial({
   // Single `{ matrix }` step: some runtimes don’t apply a raw Reanimated transform array on `Group`.
   const dialHeadTransform = useDerivedValue(() => {
     "worklet";
-    const point = getDialPoint(
+    const point = getDialHeadPoint(
       headCents.value,
       width,
-      arcPadding,
-      arcTop,
-      edgeLift
-    );
-    const angle = getDialTangentAngle(
-      headCents.value,
-      width,
-      arcPadding,
-      arcTop,
-      edgeLift
+      TRACK_SIDE_PADDING,
+      bandY
     );
     const s = headScale.value;
     return [
@@ -470,7 +271,6 @@ export const PitchDial = memo(function PitchDial({
         matrix: processTransform3d([
           { translateX: point.x },
           { translateY: point.y },
-          { rotate: angle },
           { scale: s },
         ]),
       },
@@ -479,107 +279,124 @@ export const PitchDial = memo(function PitchDial({
 
   const dialHeadOpacity = useDerivedValue(() => headOpacity.value);
 
-  const dialPath = useMemo(
-    () => createDialPath(width, arcPadding, arcTop, edgeLift),
-    [arcPadding, arcTop, edgeLift, width]
-  );
-
   const centerMarkerPath = useMemo(
-    () => createRoundedTrianglePath(centerX, tickBottomY - 24, 12, 2),
-    [centerX, tickBottomY]
+    () => createRoundedTrianglePath(centerX, bandY - 22, 12, 2),
+    [bandY, centerX]
   );
 
   const ticks = useMemo(() => {
     return Array.from({ length: TICK_COUNT }, (_, index) => {
       const progress = index / (TICK_COUNT - 1);
-      const point = getDialPointAtProgress(
-        progress,
-        width,
-        arcPadding,
-        arcTop,
-        edgeLift
-      );
+      const projection = getCylinderProjection(progress, width, TRACK_SIDE_PADDING);
       const isMajor = index % 5 === 0;
-      const bottom = point.y - 8;
-      const height = isMajor ? 14 : 8;
-      const tickWidth = isMajor ? 2 : 1.5;
+      const tickHeight = (isMajor ? 14 : 8) * projection.scale;
+      const tickWidth = Math.max(1.1, (isMajor ? 2.2 : 1.4) * projection.scale);
+      const tickOpacity = mix(0.28, isMajor ? 0.9 : 0.62, projection.normalizedDepth);
 
       return {
         key: String(index),
-        cx: point.x,
-        y: bottom - height,
+        cx: projection.x,
+        y: bandY - 8 - tickHeight,
         width: tickWidth,
-        height,
+        height: tickHeight,
         radius: tickWidth / 2,
-        color: isMajor ? "#404040" : "#262626",
+        color: alpha(
+          isMajor ? TRAIL_HEAT_COLD : { r: 0x26, g: 0x26, b: 0x26 },
+          tickOpacity
+        ),
       };
     });
-  }, [arcPadding, arcTop, edgeLift, width]);
+  }, [bandY, width]);
 
-  const trailDotLayout = useMemo(() => {
-    const out: { cx: number; cy: number }[] = [];
-    const cols = TICK_COUNT;
+  const railSegments = useMemo(() => {
+    return Array.from({ length: RAIL_SEGMENT_COUNT }, (_, index) => {
+      const progress = index / (RAIL_SEGMENT_COUNT - 1);
+      const prevProgress = Math.max(0, (index - 0.5) / (RAIL_SEGMENT_COUNT - 1));
+      const nextProgress = Math.min(1, (index + 0.5) / (RAIL_SEGMENT_COUNT - 1));
+      const projection = getCylinderProjection(progress, width, TRACK_SIDE_PADDING);
+      const prev = getCylinderProjection(prevProgress, width, TRACK_SIDE_PADDING);
+      const next = getCylinderProjection(nextProgress, width, TRACK_SIDE_PADDING);
+      const segmentWidth = Math.max(1.8, next.x - prev.x - 0.5);
+      const segmentHeight = mix(1.8, 3.4, projection.normalizedDepth);
+      const segmentOpacity = mix(0.2, 0.62, projection.normalizedDepth);
 
-    for (let row = 0; row < TRAIL_ROWS; row += 1) {
-      const yExtra = TRAIL_BASE_Y_OFFSET + row * TRAIL_ROW_GAP;
+      return {
+        key: String(index),
+        x: projection.x - segmentWidth / 2,
+        y: bandY - segmentHeight / 2,
+        width: segmentWidth,
+        height: segmentHeight,
+        radius: segmentHeight / 2,
+        opacity: segmentOpacity,
+      };
+    });
+  }, [bandY, width]);
 
-      for (let col = 0; col < cols; col += 1) {
-        const progress = col / (cols - 1);
-        const point = getDialPointAtProgress(
-          progress,
-          width,
-          arcPadding,
-          arcTop,
-          edgeLift
-        );
-        out.push({ cx: point.x, cy: point.y + yExtra });
-      }
-    }
+  const heatDots = useMemo(() => {
+    return Array.from({ length: TRAIL_DOT_COUNT }, (_, index) => {
+      const row = (index / TICK_COUNT) | 0;
+      const col = index % TICK_COUNT;
+      const progress = col / (TICK_COUNT - 1);
+      const projection = getCylinderProjection(progress, width, TRACK_SIDE_PADDING);
 
-    return out;
-  }, [arcPadding, arcTop, edgeLift, width]);
+      return {
+        index,
+        cx: projection.x,
+        cy: bandY + trailBaseYOffset + row * trailRowGap,
+        scale: TRAIL_ATLAS_SCALE * projection.scale,
+      };
+    });
+  }, [bandY, trailBaseYOffset, trailRowGap, width]);
 
-  const trailAtlasSprites = useMemo(
-    () =>
-      Array.from({ length: TRAIL_DOT_COUNT }, () =>
-        Skia.XYWHRect(0, 0, TRAIL_DOT_TEX, TRAIL_DOT_TEX)
-      ),
+  const trailAtlasSprite = useMemo(
+    () => Skia.XYWHRect(0, 0, TRAIL_DOT_TEX, TRAIL_DOT_TEX),
     []
   );
 
-  const trailAtlasTransforms = useMemo(
-    () =>
-      trailDotLayout.map((dot) =>
-        Skia.RSXformFromRadians(
-          TRAIL_ATLAS_SCALE,
-          0,
-          dot.cx,
-          dot.cy,
-          TRAIL_DOT_TEX / 2,
-          TRAIL_DOT_TEX / 2
-        )
-      ),
-    [trailDotLayout]
+  const trailAtlasSprites = useMemo(
+    () => Array.from({ length: TRAIL_DOT_COUNT }, () => trailAtlasSprite),
+    [trailAtlasSprite]
   );
 
-  const trailAtlasColors = useColorBuffer(TRAIL_DOT_COUNT, (color, index) => {
+  const trailMeshTexture = useTexture(
+    <Circle
+      cx={TRAIL_DOT_TEX / 2}
+      cy={TRAIL_DOT_TEX / 2}
+      r={TRAIL_DOT_TEX_R}
+      color="rgb(64, 64, 64)"
+    />,
+    { width: TRAIL_DOT_TEX, height: TRAIL_DOT_TEX }
+  );
+
+  const meshTransforms = useRSXformBuffer(TRAIL_DOT_COUNT, (transform, index) => {
     "worklet";
-    void trailHeatEpoch.value;
-    const h = trailHeat.value;
-    const v = h != null && index < h.length ? h[index] : 0;
-    writeHeatToSkiaColor(color, v, TRAIL_HEAT_COLD, TRAIL_HEAT_HOT);
+    const dot = heatDots[index];
+    transform.set(
+      dot.scale,
+      0,
+      dot.cx - (TRAIL_DOT_TEX / 2) * dot.scale,
+      dot.cy - (TRAIL_DOT_TEX / 2) * dot.scale
+    );
   });
 
-  // Trim along the path: `start` and `end` must differ or the stroke length is zero.
-  // Span from dial center (0 cents → 0.5) to the needle so the glow trail reads as “how far off” the note is.
-  const sweepStart = useDerivedValue(() => {
-    const progress = toDialProgress(headCents.value);
-    return Math.min(0.5, progress);
+  const sweepLeft = useDerivedValue(() => {
+    "worklet";
+    const x = getCylinderProjection(
+      toDialProgress(headCents.value),
+      width,
+      TRACK_SIDE_PADDING
+    ).x;
+    return Math.min(centerX, x);
   });
 
-  const sweepEnd = useDerivedValue(() => {
-    const progress = toDialProgress(headCents.value);
-    return Math.max(0.5, progress);
+  const sweepWidth = useDerivedValue(() => {
+    "worklet";
+    const x = getCylinderProjection(
+      toDialProgress(headCents.value),
+      width,
+      TRACK_SIDE_PADDING
+    ).x;
+    return Math.abs(x - centerX);
   });
 
   return (
@@ -589,34 +406,33 @@ export const PitchDial = memo(function PitchDial({
           mode="alpha"
           mask={<EdgeFadeMaskRect width={width} height={height} />}
         >
-          <Path
-            path={dialPath}
-            style="stroke"
-            strokeWidth={3}
-            strokeCap="round"
-            color="#404040"
-          />
-          <Path
-            path={dialPath}
-            style="stroke"
-            strokeWidth={3}
-            strokeCap="round"
-            start={sweepStart}
-            end={sweepEnd}
-            color={SWEEP_ORANGE}
-          />
-        </Mask>
-        <Group layer>
-          <Atlas
-            image={trailDotTexture}
-            sprites={trailAtlasSprites}
-            transforms={trailAtlasTransforms}
-            colors={trailAtlasColors}
-          />
-          <Group blendMode="dstIn">
-            <EdgeFadeMaskRect width={width} height={height} />
+          <Group>
+            {railSegments.map((segment) => (
+              <RoundedRect
+                key={segment.key}
+                x={segment.x}
+                y={segment.y}
+                width={segment.width}
+                height={segment.height}
+                r={segment.radius}
+                color={alpha(TRAIL_HEAT_COLD, segment.opacity)}
+              />
+            ))}
+            <RoundedRect
+              x={sweepLeft}
+              y={bandY - 1.75}
+              width={sweepWidth}
+              height={3.5}
+              r={1.75}
+              color={SWEEP_ORANGE}
+            />
+            <Atlas
+              image={trailMeshTexture}
+              sprites={trailAtlasSprites}
+              transforms={meshTransforms}
+            />
           </Group>
-        </Group>
+        </Mask>
       </Canvas>
 
       <Canvas style={StyleSheet.absoluteFill}>
