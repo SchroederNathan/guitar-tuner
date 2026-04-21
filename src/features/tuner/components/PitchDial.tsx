@@ -1,5 +1,4 @@
 import {
-  Atlas,
   Canvas,
   Circle,
   Group,
@@ -10,8 +9,6 @@ import {
   Rect,
   RoundedRect,
   Skia,
-  useRSXformBuffer,
-  useTexture,
   vec,
 } from "@shopify/react-native-skia";
 import { memo, useEffect, useMemo } from "react";
@@ -33,13 +30,7 @@ const CYLINDER_THETA_MAX = 1.12;
 const CYLINDER_EDGE_SCALE = 0.58;
 const TRACK_SIDE_PADDING = 18;
 const RAIL_SEGMENT_COUNT = 72;
-const TRAIL_ROWS = 10;
-const TRAIL_DOT_R = 2;
-const TRAIL_DOT_TEX = 24;
-const TRAIL_DOT_TEX_R = 9;
-const TRAIL_DOT_COUNT = TRAIL_ROWS * TICK_COUNT;
 const TRAIL_HEAT_COLD = { r: 0x40, g: 0x40, b: 0x40 };
-const TRAIL_ATLAS_SCALE = TRAIL_DOT_R / TRAIL_DOT_TEX_R;
 
 export interface PitchDialProps {
   width: number;
@@ -198,29 +189,11 @@ export const PitchDial = memo(function PitchDial({
   isStableInTune,
 }: PitchDialProps) {
   const centerX = width / 2;
-  const centerColumnProgress = (TICK_COUNT / 2) / (TICK_COUNT - 1);
-  const nextCenterColumnProgress = (TICK_COUNT / 2 + 1) / (TICK_COUNT - 1);
-  const trailRowGap = Math.max(
-    TRAIL_DOT_R * 2 + 1,
-    getCylinderProjection(
-      nextCenterColumnProgress,
-      width,
-      TRACK_SIDE_PADDING
-    ).x -
-    getCylinderProjection(
-      centerColumnProgress,
-      width,
-      TRACK_SIDE_PADDING
-    ).x
-  );
-  const trailBaseYOffset = trailRowGap;
-  const bottomHeatExtent =
-    trailBaseYOffset + (TRAIL_ROWS - 1) * trailRowGap + TRAIL_DOT_R + 4;
   const topMarkerExtent = 38;
   const bandY = clamp(
     height * 0.4,
     topMarkerExtent,
-    Math.max(topMarkerExtent, height - bottomHeatExtent)
+    Math.max(topMarkerExtent, height - 12)
   );
 
   const palette = isStableInTune || isInTune
@@ -332,53 +305,6 @@ export const PitchDial = memo(function PitchDial({
     });
   }, [bandY, width]);
 
-  const heatDots = useMemo(() => {
-    return Array.from({ length: TRAIL_DOT_COUNT }, (_, index) => {
-      const row = (index / TICK_COUNT) | 0;
-      const col = index % TICK_COUNT;
-      const progress = col / (TICK_COUNT - 1);
-      const projection = getCylinderProjection(progress, width, TRACK_SIDE_PADDING);
-
-      return {
-        index,
-        cx: projection.x,
-        cy: bandY + trailBaseYOffset + row * trailRowGap,
-        scale: TRAIL_ATLAS_SCALE * projection.scale,
-      };
-    });
-  }, [bandY, trailBaseYOffset, trailRowGap, width]);
-
-  const trailAtlasSprite = useMemo(
-    () => Skia.XYWHRect(0, 0, TRAIL_DOT_TEX, TRAIL_DOT_TEX),
-    []
-  );
-
-  const trailAtlasSprites = useMemo(
-    () => Array.from({ length: TRAIL_DOT_COUNT }, () => trailAtlasSprite),
-    [trailAtlasSprite]
-  );
-
-  const trailMeshTexture = useTexture(
-    <Circle
-      cx={TRAIL_DOT_TEX / 2}
-      cy={TRAIL_DOT_TEX / 2}
-      r={TRAIL_DOT_TEX_R}
-      color="rgb(64, 64, 64)"
-    />,
-    { width: TRAIL_DOT_TEX, height: TRAIL_DOT_TEX }
-  );
-
-  const meshTransforms = useRSXformBuffer(TRAIL_DOT_COUNT, (transform, index) => {
-    "worklet";
-    const dot = heatDots[index];
-    transform.set(
-      dot.scale,
-      0,
-      dot.cx - (TRAIL_DOT_TEX / 2) * dot.scale,
-      dot.cy - (TRAIL_DOT_TEX / 2) * dot.scale
-    );
-  });
-
   const sweepLeft = useDerivedValue(() => {
     "worklet";
     const x = getCylinderProjection(
@@ -425,11 +351,6 @@ export const PitchDial = memo(function PitchDial({
               height={3.5}
               r={1.75}
               color={SWEEP_ORANGE}
-            />
-            <Atlas
-              image={trailMeshTexture}
-              sprites={trailAtlasSprites}
-              transforms={meshTransforms}
             />
           </Group>
         </Mask>
