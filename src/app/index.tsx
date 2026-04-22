@@ -8,6 +8,7 @@ import {
   View,
 } from "react-native";
 
+import { GuitarHead } from "@/features/tuner/components/GuitarHead";
 import { PitchDial } from "@/features/tuner/components/PitchDial";
 import { STANDARD_TUNING } from "@/features/tuner/constants";
 import { StringId } from "@/features/tuner/types";
@@ -63,6 +64,8 @@ export default function Index() {
         selectedString={snapshot.selectedString}
         onSelect={selectString}
       />
+
+      <GuitarHead width={width} completedStrings={snapshot.completedStrings} />
     </View>
   );
 }
@@ -132,6 +135,7 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     justifyContent: "space-between",
+    overflow: "hidden",
   },
   stack: {
     flex: 1,
