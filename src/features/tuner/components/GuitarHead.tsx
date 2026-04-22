@@ -40,14 +40,14 @@ const STR_PAD = 9; // inset from neck edge to outermost string
 const STR_USABLE = NECK_W - STR_PAD * 2; // 54
 const STR_SPACING = STR_USABLE / 5;      // 10.8
 
-// String order on the fretboard (low → high, left → right)
-const ALL_STRINGS: StringId[] = ["E2", "A2", "D3", "G3", "B3", "E4"];
+// String order on the fretboard (high → low, left → right — horizontally mirrored)
+const ALL_STRINGS: StringId[] = ["E4", "B3", "G3", "D3", "A2", "E2"];
 
 // Per-side string↔peg mapping (flipped orientation: nut at top, crown at bottom)
-// Left side (top→bottom): E2 closest to nut, D3 furthest
-const LEFT_STRINGS: StringId[] = ["E2", "A2", "D3"];
-// Right side (top→bottom): E4 closest to nut, G3 furthest
-const RIGHT_STRINGS: StringId[] = ["E4", "B3", "G3"];
+// Left side (top→bottom): E4 closest to nut, G3 furthest
+const LEFT_STRINGS: StringId[] = ["E4", "B3", "G3"];
+// Right side (top→bottom): D3 closest to nut, E2 furthest
+const RIGHT_STRINGS: StringId[] = ["D3", "A2", "E2"];
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export interface GuitarHeadProps {
