@@ -12,27 +12,31 @@ import { memo, useMemo } from "react";
 import { StringId } from "@/features/tuner/types";
 
 // ─── Layout constants ──────────────────────────────────────────────────────────
-const CANVAS_H = 210;
+// Natural viewing orientation: rounded crown at top, nut + fretboard at bottom.
+const CANVAS_H = 300;
 
 // Neck / fretboard
 const NECK_W = 72;
 const NECK_HALF = NECK_W / 2; // 36
-const NUT_Y = 72;
-const NUT_H = 14;
-const HS_TOP_Y = NUT_Y + NUT_H; // 86 — where headstock begins
+const NUT_H = 12;
 
 // Headstock body (straight parallel sides, like the reference image)
 const HS_HALF = 62; // half-width of body = 124 px total
 
-// Shoulder zone: neck (72 px) widens to body (124 px) over SHOULDER_H pixels
-const SHOULDER_H = 18;
-const SHOULDER_END_Y = HS_TOP_Y + SHOULDER_H; // 104
+// Crown + body vertical layout (top → bottom)
+const CROWN_PAD = 10;                    // padding above crown apex
+const CROWN_END_Y = 20;                  // where rounded crown meets body
+const BODY_END_Y = 196;                  // where straight body starts narrowing
+const SHOULDER_H = 40;
+const SHOULDER_END_Y = BODY_END_Y + SHOULDER_H; // 214 — top of nut
+const NUT_Y = SHOULDER_END_Y;            // 214
+const FRET_TOP_Y = NUT_Y + NUT_H;        // 228 — top of fretboard
 
-// Peg positions — three per side, below the shoulder, above the crown
-const PEG_Y = [116, 150, 184];
+// Peg positions — three per side, inside the body span (86 → 196)
+const PEG_Y = [50, 110, 170];
 const PEG_SHAFT = 20; // shaft length from body edge to button center
-const PEG_BTN_W = 14; // button rounded-rect width  (horizontal axis)
-const PEG_BTN_H = 22; // button rounded-rect height (vertical axis)
+const PEG_BTN_W = 18; // button rounded-rect width  (horizontal axis)
+const PEG_BTN_H = 26; // button rounded-rect height (vertical axis)
 const PEG_BTN_R = 7;  // corner radius
 
 // String layout inside the neck
@@ -43,11 +47,13 @@ const STR_SPACING = STR_USABLE / 5;      // 10.8
 // String order on the fretboard (high → low, left → right — horizontally mirrored)
 const ALL_STRINGS: StringId[] = ["E4", "B3", "G3", "D3", "A2", "E2"];
 
-// Per-side string↔peg mapping (flipped orientation: nut at top, crown at bottom)
-// Left side (top→bottom): E4 closest to nut, G3 furthest
-const LEFT_STRINGS: StringId[] = ["E4", "B3", "G3"];
-// Right side (top→bottom): D3 closest to nut, E2 furthest
-const RIGHT_STRINGS: StringId[] = ["D3", "A2", "E2"];
+// Per-side string↔peg mapping (crown at top, nut at bottom).
+// PEG_Y index 0 = crown-proximal (top) peg, index 2 = nut-proximal (bottom) peg.
+// Both sides follow the same rule so fans mirror across the center:
+//   • innermost string of each side → crown-proximal peg (long fan)
+//   • outermost string of each side → nut-proximal peg (short fan)
+const LEFT_STRINGS: StringId[] = ["G3", "B3", "E4"];   // G3 innermost, E4 outermost
+const RIGHT_STRINGS: StringId[] = ["D3", "A2", "E2"];  // D3 innermost, E2 outermost
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export interface GuitarHeadProps {
@@ -73,49 +79,65 @@ export const GuitarHead = memo(function GuitarHead({
 
   // ── Headstock silhouette path ──────────────────────────────────────────────
   //
-  // Orientation: nut at top (y = HS_TOP_Y), crown at bottom (clips off canvas).
+  // Orientation: rounded crown at top (y ≈ CROWN_PAD), nut at bottom (y = NUT_Y).
   // Shape mirrors a Gibson-style acoustic headstock:
-  //   • Smooth shoulder curves where the neck meets the wider body
-  //   • Straight parallel sides
-  //   • Rounded crown that partially peeks at the canvas bottom
+  //   • Full rounded crown at top with breathing room above the apex
+  //   • Straight parallel body sides
+  //   • Smooth shoulder curves where the body narrows into the neck
   //
   const headstockPath = useMemo(() => {
     const p = Skia.Path.Make();
 
-    // ── top-left (nut corner) ──
-    p.moveTo(cx - NECK_HALF, HS_TOP_Y);
+    // Start at top-left of body (where crown meets body), walk clockwise.
+    p.moveTo(cx - HS_HALF, CROWN_END_Y);
 
-    // Left shoulder: curves outward from neck width to body width
+    // Left body side, going down toward nut
+    p.lineTo(cx - HS_HALF, BODY_END_Y);
+
+    // Left shoulder: narrows from body width to neck width
     p.cubicTo(
-      cx - NECK_HALF, HS_TOP_Y + SHOULDER_H * 0.55,   // ctrl 1 — stay narrow a bit
-      cx - HS_HALF,   HS_TOP_Y + SHOULDER_H * 0.45,   // ctrl 2 — arrive wide early
-      cx - HS_HALF,   SHOULDER_END_Y                    // end — body left edge
+      cx - HS_HALF, BODY_END_Y + SHOULDER_H * 0.45,
+      cx - NECK_HALF, BODY_END_Y + SHOULDER_H * 0.55,
+      cx - NECK_HALF, SHOULDER_END_Y
     );
 
-    // Left body side, going down toward crown
-    p.lineTo(cx - HS_HALF, CANVAS_H + 15);
+    // Across the top of the nut
+    p.lineTo(cx + NECK_HALF, SHOULDER_END_Y);
 
-    // Crown: gentle rounded arch, partially visible at bottom of canvas.
-    // Uses two cubic segments that arch inward and back out.
+    // Right shoulder: widens back out to body width (mirror of left)
     p.cubicTo(
-      cx - HS_HALF, CANVAS_H + 55,
-      cx - 22,      CANVAS_H + 75,
-      cx,           CANVAS_H + 80
-    );
-    p.cubicTo(
-      cx + 22,      CANVAS_H + 75,
-      cx + HS_HALF, CANVAS_H + 55,
-      cx + HS_HALF, CANVAS_H + 15
+      cx + NECK_HALF, BODY_END_Y + SHOULDER_H * 0.55,
+      cx + HS_HALF, BODY_END_Y + SHOULDER_H * 0.45,
+      cx + HS_HALF, BODY_END_Y
     );
 
-    // Right body side, going up toward shoulder
-    p.lineTo(cx + HS_HALF, SHOULDER_END_Y);
+    // Right body side, going up toward crown
+    p.lineTo(cx + HS_HALF, CROWN_END_Y);
 
-    // Right shoulder: mirror of left
+    // Right half of crown — broad rounded dome rising to just right of center
     p.cubicTo(
-      cx + HS_HALF,   HS_TOP_Y + SHOULDER_H * 0.45,
-      cx + NECK_HALF, HS_TOP_Y + SHOULDER_H * 0.55,
-      cx + NECK_HALF, HS_TOP_Y
+      cx + HS_HALF, CROWN_END_Y - 42,
+      cx + HS_HALF * 0.55, CROWN_PAD,
+      cx + 5, CROWN_PAD
+    );
+
+    // Small decorative horn at the center top
+    p.cubicTo(
+      cx + 5, CROWN_PAD - 2,
+      cx + 3, CROWN_PAD - 6,
+      cx, CROWN_PAD - 6
+    );
+    p.cubicTo(
+      cx - 3, CROWN_PAD - 6,
+      cx - 5, CROWN_PAD - 2,
+      cx - 5, CROWN_PAD
+    );
+
+    // Left half of crown — mirror back down to start
+    p.cubicTo(
+      cx - HS_HALF * 0.55, CROWN_PAD,
+      cx - HS_HALF, CROWN_END_Y - 42,
+      cx - HS_HALF, CROWN_END_Y
     );
 
     p.close();
@@ -123,29 +145,32 @@ export const GuitarHead = memo(function GuitarHead({
   }, [cx]);
 
   // ── String paths on the neck ──────────────────────────────────────────────
+  // Fretboard is at the bottom of the canvas; strings run from canvas bottom
+  // up to the fretboard-facing edge of the nut.
   const neckStrPaths = useMemo(
     () =>
       strX.map((sx) => {
         const p = Skia.Path.Make();
-        p.moveTo(sx, 0);
-        p.lineTo(sx, NUT_Y);
+        p.moveTo(sx, CANVAS_H);
+        p.lineTo(sx, FRET_TOP_Y);
         return p;
       }),
     [strX]
   );
 
   // ── String paths across the headstock face (nut → capstan post) ───────────
+  // Strings emerge from the crown-facing edge of the nut and fan out to pegs.
   const hsStrPaths = useMemo(
     () => [
       ...LEFT_STRINGS.map((sid, i) => {
         const p = Skia.Path.Make();
-        p.moveTo(strX[ALL_STRINGS.indexOf(sid)], HS_TOP_Y);
+        p.moveTo(strX[ALL_STRINGS.indexOf(sid)], NUT_Y);
         p.lineTo(leftEdgeX, PEG_Y[i]);
         return { path: p, key: `L${i}` };
       }),
       ...RIGHT_STRINGS.map((sid, i) => {
         const p = Skia.Path.Make();
-        p.moveTo(strX[ALL_STRINGS.indexOf(sid)], HS_TOP_Y);
+        p.moveTo(strX[ALL_STRINGS.indexOf(sid)], NUT_Y);
         p.lineTo(rightEdgeX, PEG_Y[i]);
         return { path: p, key: `R${i}` };
       }),
@@ -157,12 +182,21 @@ export const GuitarHead = memo(function GuitarHead({
   return (
     <Canvas style={{ width, height: CANVAS_H }}>
 
-      {/* Fretboard */}
-      <Rect x={cx - NECK_HALF} y={0} width={NECK_W} height={NUT_Y} color="#1E1E1E" />
+      {/* Headstock fill (drawn first so nut/fretboard sit on top) */}
+      <Path path={headstockPath} color="#191919" />
 
-      {/* Fret bars (2 frets visible above the nut) */}
-      <Rect x={cx - NECK_HALF} y={20} width={NECK_W} height={2.5} color="#363636" />
-      <Rect x={cx - NECK_HALF} y={48} width={NECK_W} height={2.5} color="#363636" />
+      {/* Fretboard (below the nut, running to canvas bottom) */}
+      <Rect
+        x={cx - NECK_HALF}
+        y={FRET_TOP_Y}
+        width={NECK_W}
+        height={CANVAS_H - FRET_TOP_Y}
+        color="#1E1E1E"
+      />
+
+      {/* Fret bars (2 frets visible below the nut) */}
+      <Rect x={cx - NECK_HALF} y={FRET_TOP_Y + 20} width={NECK_W} height={2.5} color="#363636" />
+      <Rect x={cx - NECK_HALF} y={FRET_TOP_Y + 48} width={NECK_W} height={2.5} color="#363636" />
 
       {/* Neck strings */}
       {neckStrPaths.map((p, i) => (
@@ -171,9 +205,6 @@ export const GuitarHead = memo(function GuitarHead({
 
       {/* Nut */}
       <Rect x={cx - NECK_HALF} y={NUT_Y} width={NECK_W} height={NUT_H} color="#454040" />
-
-      {/* Headstock fill */}
-      <Path path={headstockPath} color="#191919" />
 
       {/* Headstock edge highlight */}
       <Path path={headstockPath} color="#2C2C2C" strokeWidth={1.5} style="stroke" />
@@ -191,7 +222,7 @@ export const GuitarHead = memo(function GuitarHead({
         // Button center is to the LEFT of the body edge
         const btnCX = pegX - PEG_SHAFT;
         const knobColor = done ? "#00C951" : "#383838";
-        const dotColor  = done ? "#6EF59E" : "#4A4A4A";
+        const dotColor = done ? "#6EF59E" : "#4A4A4A";
 
         return (
           <Group key={`pL${i}`}>
@@ -229,7 +260,7 @@ export const GuitarHead = memo(function GuitarHead({
         // Button center is to the RIGHT of the body edge
         const btnCX = pegX + PEG_SHAFT;
         const knobColor = done ? "#00C951" : "#383838";
-        const dotColor  = done ? "#6EF59E" : "#4A4A4A";
+        const dotColor = done ? "#6EF59E" : "#4A4A4A";
 
         return (
           <Group key={`pR${i}`}>

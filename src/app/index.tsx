@@ -57,6 +57,8 @@ export default function Index() {
             isStableInTune={snapshot.isStableInTune}
           />
         </View>
+        <GuitarHead width={width} completedStrings={snapshot.completedStrings} />
+
       </View>
 
       <CompactStringSelector
@@ -65,7 +67,6 @@ export default function Index() {
         onSelect={selectString}
       />
 
-      <GuitarHead width={width} completedStrings={snapshot.completedStrings} />
     </View>
   );
 }
